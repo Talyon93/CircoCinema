@@ -1,13 +1,11 @@
-# Circo Cinema
+# Circo Cinema — Tailwind CJS setup
+- Config in CommonJS: `tailwind.config.cjs`, `postcss.config.cjs`
+- Import `./src/index.css` in `src/main.tsx`
+- Works with `"type": "module"` in package.json and Netlify.
 
-MVP React (Vite) con **sessione di voto** condivisa via `localStorage`.
-
-## Comandi
-```bash
+## Run
 npm install
 npm run dev
-```
 
-## Deploy Netlify
-- Build command: `npm run build`
-- Publish dir: `dist`
+## Build
+npm run build
