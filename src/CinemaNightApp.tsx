@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * Circo Cinema – complete app
+ * Circo Cinema – complete app (with Dark Mode toggle)
+ * - Dark mode via Tailwind `dark:` + toggle persistente
  * - Vote flow with "Picked by", live stats, edit vote
  * - History: Extended + Compact (aligned like spreadsheet row)
  * - Profile: avatar + list of movies you picked
@@ -21,6 +22,7 @@ const K_ACTIVE_VOTE = "cn_active_vote";       // { id, movie, picked_by, started
 const K_ACTIVE_RATINGS = "cn_active_ratings"; // { [user]: number }
 const K_PROFILE_PREFIX = "cn_profile_";       // `${K_PROFILE_PREFIX}${username}` -> { avatar?: string }
 const K_TMDB_CACHE = "cn_tmdb_cache";         // cache poster/overview per titolo
+const K_THEME = "cn_theme";                   // 'light' | 'dark'
 
 // ============================
 // Helpers
@@ -32,10 +34,8 @@ const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 /** Completa poster/overview/genres per un film dato, usando TMDB. */
 async function enrichFromTmdbByTitleOrId(movie: any) {
   try {
-    // se già ha i generi esci
     if (Array.isArray(movie?.genres) && movie.genres.length) return movie;
 
-    // se ho l'id TMDB, prendo i dettagli diretti
     if (movie?.id) {
       const det = await tmdbDetails(movie.id);
       if (det) {
@@ -48,7 +48,6 @@ async function enrichFromTmdbByTitleOrId(movie: any) {
       }
     }
 
-    // altrimenti cerco per titolo e poi details
     const title = movie?.title || "";
     if (!title) return movie;
 
@@ -71,11 +70,11 @@ async function enrichFromTmdbByTitleOrId(movie: any) {
 }
 
 function getAverage(r: Record<string, number> | undefined | null) {
-    if (!r) return null;
-    const vals = Object.values(r).map(Number);
-    if (!vals.length) return null;
-    return vals.reduce((a, b) => a + b, 0) / vals.length;
-  }
+  if (!r) return null;
+  const vals = Object.values(r).map(Number);
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
 
 function posterUrl(p?: string, size: "w185" | "w342" = "w185") {
   if (!p) return "";
@@ -142,28 +141,23 @@ async function tmdbDetails(tmdbId: number) {
 
 // Assicura che il movie abbia almeno genres (e, già che ci siamo, completiamo poster/overview se mancano)
 async function ensureGenres(movie: any): Promise<any> {
-    try {
-      // Se i generi ci sono già, esci
-      if (Array.isArray(movie?.genres) && movie.genres.length) return movie;
-  
-      // Se ho un id TMDB, prendo i dettagli completi
-      if (movie?.id) {
-        const det = await tmdbDetails(movie.id);
-        if (det) {
-          return {
-            ...movie,
-            // priorità ai campi già presenti, ma se mancano prendili dai dettagli
-            poster_path: movie.poster_path ?? det.poster_path,
-            overview: movie.overview ?? det.overview,
-            genres: det.genres || [],
-          };
-        }
+  try {
+    if (Array.isArray(movie?.genres) && movie.genres.length) return movie;
+
+    if (movie?.id) {
+      const det = await tmdbDetails(movie.id);
+      if (det) {
+        return {
+          ...movie,
+          poster_path: movie.poster_path ?? det.poster_path,
+          overview: movie.overview ?? det.overview,
+          genres: det.genres || [],
+        };
       }
-    } catch {}
-    // fallback: torna com’è
-    return movie;
-  }
-  
+    }
+  } catch {}
+  return movie;
+}
 
 // TMDB metadata cache for History seed entries
 type MetaCache = Record<string, { poster_path?: string; overview?: string }>;
@@ -199,57 +193,113 @@ async function fetchMetaForTitle(title: string): Promise<{ poster_path?: string;
 }
 
 // ============================
+// Theme (Dark/Light)
+// ============================
+type Theme = "light" | "dark";
+function getInitialTheme(): Theme {
+  const saved = (localStorage.getItem(K_THEME) as Theme | null) || null;
+  if (saved === "dark" || saved === "light") return saved;
+  return "dark"; // default
+}
+function applyTheme(theme: Theme) {
+  const root = document.documentElement;
+  if (theme === "dark") root.classList.add("dark");
+  else root.classList.remove("dark");
+  localStorage.setItem(K_THEME, theme);
+}
+
+// ============================
 // UI primitives
 // ============================
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm ${className}`}>{children}</div>;
-}
-
-function Header({
-  user,
-  onLogout,
-  tab,
-  setTab,
-}: {
-  user: string;
-  onLogout: () => void;
-  tab: "vote" | "history" | "profile";
-  setTab: (t: "vote" | "history" | "profile") => void;
-}) {
   return (
-    <div className="flex flex-col gap-2 py-4 md:flex-row md:items-center md:justify-between">
-      <h1 className="text-2xl font-bold">🎞️ Circo Cinema</h1>
-      <div className="flex items-center gap-4">
-        <nav className="flex gap-2">
-          <button
-            onClick={() => setTab("vote")}
-            className={`rounded-xl border px-3 py-2 ${tab === "vote" ? "bg-black text-white" : "bg-white"}`}
-          >
-            Vote
-          </button>
-          <button
-            onClick={() => setTab("history")}
-            className={`rounded-xl border px-3 py-2 ${tab === "history" ? "bg-black text-white" : "bg-white"}`}
-          >
-            History
-          </button>
-          <button
-            onClick={() => setTab("profile")}
-            className={`rounded-xl border px-3 py-2 ${tab === "profile" ? "bg-black text-white" : "bg-white"}`}
-          >
-            Profile
-          </button>
-        </nav>
-        <span className="text-sm">
-          Hi, <b>{user}</b>
-        </span>
-        <button onClick={onLogout} className="rounded-xl border px-3 py-1">
-          Sign out
-        </button>
-      </div>
+    <div
+      className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm 
+                  dark:border-zinc-800 dark:bg-zinc-900/60 ${className}`}
+    >
+      {children}
     </div>
   );
 }
+
+function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+  return (
+    <button
+      aria-label="Toggle dark mode"
+      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+      title={theme === "dark" ? "Switch to Light" : "Switch to Dark"}
+    >
+      {theme === "dark" ? "🌙 Dark" : "☀️ Light"}
+    </button>
+  );
+}
+
+function Header({
+    user,
+    onLogout,
+    tab,
+    setTab,
+    theme,
+    setTheme,
+  }: {
+    user: string;
+    onLogout: () => void;
+    tab: "vote" | "history" | "profile";
+    setTab: (t: "vote" | "history" | "profile") => void;
+    theme: "light" | "dark";
+    setTheme: (t: "light" | "dark") => void;
+  }) {
+    const tabBtn = (key: "vote" | "history" | "profile", label: string) => (
+      <button
+        onClick={() => setTab(key)}
+        className={`rounded-xl border px-3 py-2 
+          ${tab === key ? "bg-black text-white dark:bg-white dark:text-black" : "bg-white dark:bg-zinc-900 dark:text-zinc-100"} 
+          border-gray-200 dark:border-zinc-700`}
+      >
+        {label}
+      </button>
+    );
+  
+    return (
+      <div className="flex flex-col gap-2 py-4 md:flex-row md:items-center md:justify-between">
+        <h1 className="text-2xl font-bold">🎞️ Circo Cinema</h1>
+  
+        <div className="flex items-center gap-3">
+          {/* NAV: solo i tab */}
+          <nav className="flex items-center gap-2">
+            {tabBtn("vote", "Vote")}
+            {tabBtn("history", "History")}
+            {tabBtn("profile", "Profile")}
+          </nav>
+  
+          {/* Info utente */}
+          <span className="text-sm text-gray-700 dark:text-zinc-300">
+            Hi, <b>{user}</b>
+          </span>
+  
+          {/* Logout */}
+          <button
+            onClick={onLogout}
+            className="rounded-xl border px-3 py-1 border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-900"
+          >
+            Sign out
+          </button>
+  
+          {/* Toggle tema → alla destra di Sign out */}
+          <button
+            aria-label="Toggle dark mode"
+            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            title={theme === "dark" ? "Switch to Light" : "Switch to Dark"}
+          >
+            {theme === "dark" ? "🌙 Dark" : "☀️ Light"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
 
 function Login({ onLogin }: { onLogin: (name: string) => void }) {
   const [name, setName] = useState("");
@@ -257,16 +307,18 @@ function Login({ onLogin }: { onLogin: (name: string) => void }) {
     <div className="mx-auto mt-24 max-w-md">
       <Card>
         <h2 className="mb-2 text-xl font-semibold">Enter your name</h2>
-        <p className="mb-4 text-sm text-gray-600">If you used this name before, your profile image and picks will be restored.</p>
+        <p className="mb-4 text-sm text-gray-600 dark:text-zinc-400">
+          If you used this name before, your profile image and picks will be restored.
+        </p>
         <div className="flex gap-2">
           <input
-            className="flex-1 rounded-xl border px-3 py-2"
+            className="flex-1 rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
             placeholder="e.g. Talyon"
             value={name}
             onChange={(e) => setName(e.target.value.trimStart())}
           />
           <button
-            className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30"
+            className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
             disabled={!name}
             onClick={() => onLogin(name)}
           >
@@ -304,16 +356,20 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
     <Card>
       <div className="flex items-end gap-2">
         <div className="flex-1">
-          <label className="text-sm">Search a movie</label>
+          <label className="text-sm text-gray-600 dark:text-zinc-400">Search a movie</label>
           <input
-            className="w-full rounded-xl border px-3 py-2"
+            className="w-full rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
             placeholder="e.g. The Matrix"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && search()}
           />
         </div>
-        <button onClick={search} className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30" disabled={!q || loading}>
+        <button
+          onClick={search}
+          className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
+          disabled={!q || loading}
+        >
           {loading ? "..." : "Search"}
         </button>
       </div>
@@ -322,7 +378,7 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
         {results.map((r) => (
           <div
             key={r.id}
-            className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50"
+            className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50 dark:hover:bg-zinc-900 border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
             onClick={() => onPick(r)}
           >
             {r.poster_path && <img src={posterUrl(r.poster_path, "w185")} alt={r.title} className="h-24 w-16 rounded-lg object-cover" />}
@@ -330,7 +386,7 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
               <div className="font-semibold">
                 {r.title} {r.release_date ? <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span> : null}
               </div>
-              <div className="line-clamp-3 text-sm text-gray-700">{r.overview}</div>
+              <div className="line-clamp-3 text-sm text-gray-700 dark:text-zinc-300">{r.overview}</div>
             </div>
           </div>
         ))}
@@ -377,13 +433,13 @@ function StartVoteCard({
           <h3 className="text-xl font-bold">
             {movie.title} {movie.release_date ? <span className="text-gray-500">({movie.release_date.slice(0, 4)})</span> : null}
           </h3>
-          <p className="mt-1 whitespace-pre-wrap text-gray-700">{movie.overview}</p>
+          <p className="mt-1 whitespace-pre-wrap text-gray-700 dark:text-zinc-300">{movie.overview}</p>
 
           <div className="mt-4 grid gap-2">
-            <label className="text-sm font-medium">Picked by</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-zinc-300">Picked by</label>
             <input
               list="known-users"
-              className="max-w-sm rounded-xl border px-3 py-2"
+              className="max-w-sm rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
               placeholder="Choose a name or type a new one"
               value={pickedBy}
               onChange={(e) => setPickedBy(e.target.value)}
@@ -396,7 +452,11 @@ function StartVoteCard({
           </div>
 
           <div className="mt-3">
-            <button className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30" disabled={!valid} onClick={() => onStartVoting(movie, pickedBy.trim())}>
+            <button
+              className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
+              disabled={!valid}
+              onClick={() => onStartVoting(movie, pickedBy.trim())}
+            >
               Start voting
             </button>
           </div>
@@ -476,7 +536,7 @@ function ActiveVoting({
               <div className="text-xl font-bold">Voting in progress · {movie.title}</div>
               {pickedBy && (
                 <div className="text-sm">
-                  <span className="rounded-full bg-black px-2 py-1 text-white">
+                  <span className="rounded-full bg-black px-2 py-1 text-white dark:bg-white dark:text-black">
                     Picked by: <b>{pickedBy}</b>
                   </span>
                 </div>
@@ -484,15 +544,15 @@ function ActiveVoting({
             </div>
           </div>
 
-          <p className="mt-2 text-gray-700">{movie.overview}</p>
+          <p className="mt-2 text-gray-700 dark:text-zinc-300">{movie.overview}</p>
 
           <div className="mt-3 flex w-full items-stretch gap-3">
-            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3">
-              <div className="text-xs uppercase text-gray-500">Votes</div>
+            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
+              <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Votes</div>
               <div className="text-2xl font-bold leading-6">{scores.length}</div>
             </div>
-            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3">
-              <div className="text-xs uppercase text-gray-500">Live avg</div>
+            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
+              <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Live avg</div>
               <div className="text-2xl font-bold leading-6">{avg !== null ? formatScore(avg) : "—"}</div>
             </div>
           </div>
@@ -500,19 +560,19 @@ function ActiveVoting({
           {!hasVoted ? (
             <div className="mt-4">
               {!openVote ? (
-                <button className="rounded-xl bg-black px-4 py-2 text-white" onClick={() => setOpenVote(true)}>
+                <button className="rounded-xl bg-black px-4 py-2 text-white dark:bg-white dark:text-black" onClick={() => setOpenVote(true)}>
                   Vote
                 </button>
               ) : (
-                <div className="mt-2 rounded-2xl border p-3">
+                <div className="mt-2 rounded-2xl border p-3 dark:border-zinc-700">
                   <div className="mb-2 text-sm">Choose your score</div>
                   <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
                   <div className="mt-2 flex gap-2">
-                    <button className="rounded-xl bg-black px-4 py-2 text-white" onClick={submit}>
+                    <button className="rounded-xl bg-black px-4 py-2 text-white dark:bg-white dark:text-black" onClick={submit}>
                       Submit vote
                     </button>
                     <button
-                      className="rounded-xl border px-3 py-2"
+                      className="rounded-xl border px-3 py-2 dark:border-zinc-700"
                       onClick={() => {
                         setOpenVote(false);
                         setTemp(you ?? 7);
@@ -528,14 +588,14 @@ function ActiveVoting({
             <>
               {!editMode ? (
                 <div className="mt-4 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 rounded-2xl border bg-gray-50 p-3 text-sm">
+                  <div className="flex items-center gap-2 rounded-2xl border bg-gray-50 p-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
                     <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
                     <span>
                       <b>Vote saved.</b> Please wait for others…
                     </span>
                   </div>
                   <button
-                    className="rounded-xl border px-3 py-2"
+                    className="rounded-xl border px-3 py-2 dark:border-zinc-700"
                     onClick={() => {
                       setTemp(you ?? 7);
                       setEditMode(true);
@@ -545,17 +605,17 @@ function ActiveVoting({
                   </button>
                 </div>
               ) : (
-                <div className="mt-4 rounded-2xl border p-3">
+                <div className="mt-4 rounded-2xl border p-3 dark:border-zinc-700">
                   <div className="mb-2 text-sm">
                     Edit your vote <span className="text-gray-500">(current: {formatScore(you)})</span>
                   </div>
                   <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
                   <div className="mt-2 flex gap-2">
-                    <button className="rounded-xl bg-black px-4 py-2 text-white" onClick={submit}>
+                    <button className="rounded-xl bg-black px-4 py-2 text-white dark:bg-white dark:text-black" onClick={submit}>
                       Save
                     </button>
                     <button
-                      className="rounded-xl border px-3 py-2"
+                      className="rounded-xl border px-3 py-2 dark:border-zinc-700"
                       onClick={() => {
                         setEditMode(false);
                         setTemp(you ?? 7);
@@ -572,20 +632,27 @@ function ActiveVoting({
           <div className="mt-5">
             <div className="mb-2 text-sm font-semibold">Live votes</div>
             {sorted.length === 0 ? (
-              <div className="rounded-xl border bg-white p-3 text-sm text-gray-600">No votes yet — be the first!</div>
+              <div className="rounded-xl border bg-white p-3 text-sm text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                No votes yet — be the first!
+              </div>
             ) : (
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {sorted.map(([name, score]) => {
                   const isYou = name === currentUser;
                   return (
-                    <div key={name} className={`flex items-center gap-3 rounded-2xl border bg-white p-3 ${isYou ? "ring-2 ring-black" : ""}`}>
+                    <div
+                      key={name}
+                      className={`flex items-center gap-3 rounded-2xl border bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900 ${
+                        isYou ? "ring-2 ring-black dark:ring-white" : ""
+                      }`}
+                    >
                       <Avatar name={name} />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-medium">
-                          {name} {isYou && <span className="ml-1 rounded bg-black px-1.5 py-0.5 text-xs font-semibold text-white">You</span>}
+                          {name} {isYou && <span className="ml-1 rounded bg-black px-1.5 py-0.5 text-xs font-semibold text-white dark:bg-white dark:text-black">You</span>}
                         </div>
                       </div>
-                      <div className="rounded-full border px-2 py-0.5 text-sm font-semibold">{formatScore(score)}</div>
+                      <div className="rounded-full border px-2 py-0.5 text-sm font-semibold dark:border-zinc-700">{formatScore(score)}</div>
                     </div>
                   );
                 })}
@@ -594,7 +661,7 @@ function ActiveVoting({
           </div>
 
           <div className="mt-5">
-            <button className="rounded-xl border px-4 py-2" onClick={onEnd}>
+            <button className="rounded-xl border px-4 py-2 dark:border-zinc-700" onClick={onEnd}>
               End voting
             </button>
           </div>
@@ -608,85 +675,82 @@ function ActiveVoting({
 // History cards (Extended + Compact)
 // ============================
 function HistoryCardExtended({ v }: { v: any }) {
-    const ratings = (v.ratings || {}) as Record<string, number>;
-    const scores = Object.values(ratings).map(Number);
-    const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-  
-    // ---- Colore gradiente per la media (1 → rosso, 10 → verde)
-    const avgHue = (() => {
-      if (avg == null) return 0;
-      const t = Math.max(1, Math.min(10, avg));
-      return ((t - 3) / 8) * 120; // 0..120
-    })();
-  
-    // ---- Avatar del picker
-    function PickerAvatar({ name }: { name: string }) {
-      const avatar = loadAvatarFor(name);
-      if (avatar) {
-        return (
-          <img
-            src={avatar}
-            alt={name}
-            className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow"
-          />
-        );
-      }
-      const initial = name?.[0]?.toUpperCase() || "?";
+  const ratings = (v.ratings || {}) as Record<string, number>;
+  const scores = Object.values(ratings).map(Number);
+  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
+  const avgHue = (() => {
+    if (avg == null) return 0;
+    const t = Math.max(1, Math.min(10, avg));
+    return ((t - 3) / 8) * 120; // 0..120
+  })();
+
+  function PickerAvatar({ name }: { name: string }) {
+    const avatar = loadAvatarFor(name);
+    if (avatar) {
       return (
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-sm font-bold ring-2 ring-white shadow">
-          {initial}
-        </div>
+        <img
+          src={avatar}
+          alt={name}
+          className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow"
+        />
       );
     }
-  
-    // ---- Meta locale + lazy fetch + cache
-    const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>(() => ({
-      poster_path: v?.movie?.poster_path,
-      overview: v?.movie?.overview,
-    }));
-  
-    React.useEffect(() => {
-      const title = v?.movie?.title || "";
-      if (!title) return;
-  
-      const needPoster = !meta?.poster_path;
-      const needOverview = !meta?.overview;
-      if (!needPoster && !needOverview) return;
-  
-      const cache = getMetaCache();
-      const cached = cache[title];
-      if (cached && (cached.poster_path || cached.overview)) {
-        setMeta(m => ({
-          poster_path: m.poster_path || cached.poster_path,
-          overview: m.overview || cached.overview,
-        }));
-        return;
-      }
-  
-      (async () => {
-        const fetched = await fetchMetaForTitle(title);
-        if (fetched) {
-          setMeta(m => ({
-            poster_path: m.poster_path || fetched.poster_path,
-            overview: m.overview || fetched.overview,
-          }));
-          const c = getMetaCache();
-          c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
-          setMetaCache(c);
-        }
-      })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [v?.movie?.title]);
-  
-    const poster = meta?.poster_path || v?.movie?.poster_path;
-    const overview = meta?.overview ?? v?.movie?.overview;
-  
+    const initial = name?.[0]?.toUpperCase() || "?";
     return (
-      <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 transition hover:shadow-md">
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-sm font-bold ring-2 ring-white shadow">
+        {initial}
+      </div>
+    );
+  }
+
+  const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>(() => ({
+    poster_path: v?.movie?.poster_path,
+    overview: v?.movie?.overview,
+  }));
+
+  React.useEffect(() => {
+    const title = v?.movie?.title || "";
+    if (!title) return;
+
+    const needPoster = !meta?.poster_path;
+    const needOverview = !meta?.overview;
+    if (!needPoster && !needOverview) return;
+
+    const cache = getMetaCache();
+    const cached = cache[title];
+    if (cached && (cached.poster_path || cached.overview)) {
+      setMeta(m => ({
+        poster_path: m.poster_path || cached.poster_path,
+        overview: m.overview || cached.overview,
+      }));
+      return;
+    }
+
+    (async () => {
+      const fetched = await fetchMetaForTitle(title);
+      if (fetched) {
+        setMeta(m => ({
+          poster_path: m.poster_path || fetched.poster_path,
+          overview: m.overview || fetched.overview,
+        }));
+        const c = getMetaCache();
+        c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
+        setMetaCache(c);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v?.movie?.title]);
+
+  const poster = meta?.poster_path || v?.movie?.poster_path;
+  const overview = meta?.overview ?? v?.movie?.overview;
+
+  return (
+    <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
         {/* HEADER */}
         <div className="mb-3 flex flex-wrap items-center gap-3">
           {v.picked_by && (
-            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1">
+            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
               <PickerAvatar name={v.picked_by} />
               <span className="text-sm font-medium">{v.picked_by}</span>
             </div>
@@ -696,12 +760,12 @@ function HistoryCardExtended({ v }: { v: any }) {
             <span className="break-words">{v.movie?.title || "Untitled"}</span>
           </h3>
           {v.started_at && (
-            <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600">
+            <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
               {new Date(v.started_at).toLocaleString()}
             </span>
           )}
         </div>
-  
+
         {/* BODY: poster + overview */}
         <div className="grid gap-4 md:grid-cols-[120px,1fr]">
           <div className="flex justify-center md:justify-start">
@@ -709,20 +773,20 @@ function HistoryCardExtended({ v }: { v: any }) {
               <img
                 src={posterUrl(poster, "w185")}
                 alt={v.movie?.title}
-                className="h-44 w-28 rounded-2xl border border-gray-200 object-cover shadow-sm"
+                className="h-44 w-28 rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
               />
             ) : (
-              <div className="flex h-44 w-28 items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500">
+              <div className="flex h-44 w-28 items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
                 No poster
               </div>
             )}
           </div>
-  
-          <p className="min-w-0 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800">
+
+          <p className="min-w-0 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
             {overview && overview.trim().length > 0 ? overview : "No description available."}
           </p>
         </div>
-  
+
         {/* FOOTER: media + voti */}
         <div className="mt-4 flex flex-wrap items-center gap-3">
           {avg !== null && (
@@ -734,7 +798,6 @@ function HistoryCardExtended({ v }: { v: any }) {
               aria-label={`Average ${formatScore(avg)}`}
               title={`Average ${formatScore(avg)}`}
             >
-              {/* stellina svg per un look più pulito */}
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 20 20"
@@ -747,12 +810,12 @@ function HistoryCardExtended({ v }: { v: any }) {
               <span className="ml-1 text-xs opacity-85">({scores.length})</span>
             </div>
           )}
-  
+
           <div className="flex flex-wrap gap-2">
             {Object.entries(ratings).map(([n, s]) => (
               <span
                 key={n}
-                className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm"
+                className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
                 title={`${n}: ${formatScore(Number(s))}`}
               >
                 {n}: {formatScore(Number(s))}
@@ -761,176 +824,165 @@ function HistoryCardExtended({ v }: { v: any }) {
           </div>
         </div>
       </div>
-    );
-  }
-  
-  
+  );
+}
 
 function HistoryCardCompact({ v }: { v: any }) {
-    const ratings = (v.ratings || {}) as Record<string, number>;
-    const scores = Object.values(ratings).map(Number);
-    const avg =
-      scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-  
-    // colore sfumato in base alla media (1 → rosso, 10 → verde)
-    const avgHue = (() => {
-      if (avg == null) return 0;
-      // 1..10 → 0..120 (rosso → verde). Clamp per sicurezza.
-      const t = Math.max(1, Math.min(10, avg));
-      return ((t - 3) / 8) * 120;
-    })();
-  
-    function PickerAvatar({ name }: { name: string }) {
-      const avatar = loadAvatarFor(name);
-      if (avatar) {
-        return (
-          <img
-            src={avatar}
-            alt={name}
-            className="h-7 w-7 rounded-full object-cover ring-2 ring-white shadow"
-          />
-        );
-      }
-      const initial = name?.[0]?.toUpperCase() || "?";
+  const ratings = (v.ratings || {}) as Record<string, number>;
+  const scores = Object.values(ratings).map(Number);
+  const avg =
+    scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
+  const avgHue = (() => {
+    if (avg == null) return 0;
+    const t = Math.max(1, Math.min(10, avg));
+    return ((t - 3) / 8) * 120;
+  })();
+
+  function PickerAvatar({ name }: { name: string }) {
+    const avatar = loadAvatarFor(name);
+    if (avatar) {
       return (
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-200 text-xs font-bold ring-2 ring-white shadow">
-          {initial}
-        </div>
+        <img
+          src={avatar}
+          alt={name}
+          className="h-7 w-7 rounded-full object-cover ring-2 ring-white shadow"
+        />
       );
     }
-  
+    const initial = name?.[0]?.toUpperCase() || "?";
     return (
-      <div className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm transition hover:shadow-md">
-        {/* RIGA 1 — picker + titolo */}
-        <div className="flex flex-wrap items-center gap-2">
-          {v.picked_by && (
-            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1">
-              <PickerAvatar name={v.picked_by} />
-              <span className="text-sm font-medium">{v.picked_by}</span>
-            </div>
-          )}
-          <div className="mx-1 text-gray-300">•</div>
-          <div className="min-w-0 text-[15px] font-semibold leading-tight">
-            <span className="break-words">{v.movie?.title || "Untitled"}</span>
+      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-200 text-xs font-bold ring-2 ring-white shadow">
+        {initial}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
+      <div className="flex flex-wrap items-center gap-2">
+        {v.picked_by && (
+          <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
+            <PickerAvatar name={v.picked_by} />
+            <span className="text-sm font-medium">{v.picked_by}</span>
           </div>
+        )}
+        <div className="mx-1 text-gray-300">•</div>
+        <div className="min-w-0 text-[15px] font-semibold leading-tight">
+          <span className="break-words">{v.movie?.title || "Untitled"}</span>
         </div>
-  
-        {/* RIGA 2 — media + voti */}
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          {avg !== null && (
-            <div
-              className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
-              style={{
-                background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
-              }}
-              aria-label={`Average ${formatScore(avg)}`}
-              title={`Average ${formatScore(avg)}`}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        {avg !== null && (
+          <div
+            className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
+            style={{
+              background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
+            }}
+            aria-label={`Average ${formatScore(avg)}`}
+            title={`Average ${formatScore(avg)}`}
+          >
+            <span className="leading-none">★</span>
+            <span>Avg {formatScore(avg)}</span>
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(ratings).map(([n, s]) => (
+            <span
+              key={n}
+              className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              title={`${n}: ${formatScore(Number(s))}`}
             >
-              <span className="leading-none">★</span>
-              <span>Avg {formatScore(avg)}</span>
-            </div>
-          )}
-  
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(ratings).map(([n, s]) => (
-              <span
-                key={n}
-                className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm"
-                title={`${n}: ${formatScore(Number(s))}`}
-              >
-                {n}: {formatScore(Number(s))}
-              </span>
+              {n}: {formatScore(Number(s))}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HistoryFilters({
+  pickers,
+  genres,
+  picker,
+  setPicker,
+  genre,
+  setGenre,
+  sort,
+  setSort,
+  onReset
+}: {
+  pickers: string[];
+  genres: string[];
+  picker: string;
+  setPicker: (v: string) => void;
+  genre: string;
+  setGenre: (v: string) => void;
+  sort: "date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc";
+  setSort: (v: "date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc") => void;
+  onReset: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="flex flex-col">
+          <label className="text-xs text-gray-600 dark:text-zinc-400">Picked by</label>
+          <select
+            className="rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+            value={picker}
+            onChange={(e) => setPicker(e.target.value)}
+          >
+            <option value="">All</option>
+            {pickers.map((p) => (
+              <option key={p} value={p}>{p}</option>
             ))}
-          </div>
+          </select>
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-xs text-gray-600 dark:text-zinc-400">Genre</label>
+          <select
+            className="rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+            value={genre}
+            onChange={(e) => setGenre(e.target.value)}
+          >
+            <option value="">All</option>
+            {genres.map((g) => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-xs text-gray-600 dark:text-zinc-400">Sort by</label>
+          <select
+            className="rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+            value={sort}
+            onChange={(e) =>
+              setSort(e.target.value as any)
+            }
+          >
+            <option value="date-desc">Date ↓ (newest)</option>
+            <option value="date-asc">Date ↑ (oldest)</option>
+            <option value="avg-desc">Average ↓</option>
+            <option value="avg-asc">Average ↑</option>
+            <option value="votes-desc">Votes count ↓</option>
+            <option value="votes-asc">Votes count ↑</option>
+          </select>
         </div>
       </div>
-    );
-  }
-  
-  
-  function HistoryFilters({
-    pickers,
-    genres,
-    picker,
-    setPicker,
-    genre,
-    setGenre,
-    sort,
-    setSort,
-    onReset
-  }: {
-    pickers: string[];
-    genres: string[];
-    picker: string;
-    setPicker: (v: string) => void;
-    genre: string;
-    setGenre: (v: string) => void;
-    sort: "date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc";
-    setSort: (v: "date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc") => void;
-    onReset: () => void;
-  }) {
-    return (
-      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div className="grid gap-3 md:grid-cols-3">
-          {/* Picker */}
-          <div className="flex flex-col">
-            <label className="text-xs text-gray-600">Picked by</label>
-            <select
-              className="rounded-xl border px-3 py-2"
-              value={picker}
-              onChange={(e) => setPicker(e.target.value)}
-            >
-              <option value="">All</option>
-              {pickers.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </div>
-  
-          {/* Genre */}
-          <div className="flex flex-col">
-            <label className="text-xs text-gray-600">Genre</label>
-            <select
-              className="rounded-xl border px-3 py-2"
-              value={genre}
-              onChange={(e) => setGenre(e.target.value)}
-            >
-              <option value="">All</option>
-              {genres.map((g) => (
-                <option key={g} value={g}>{g}</option>
-              ))}
-            </select>
-          </div>
-  
-          {/* Sort */}
-          <div className="flex flex-col">
-            <label className="text-xs text-gray-600">Sort by</label>
-            <select
-              className="rounded-xl border px-3 py-2"
-              value={sort}
-              onChange={(e) =>
-                setSort(e.target.value as any)
-              }
-            >
-              <option value="date-desc">Date ↓ (newest)</option>
-              <option value="date-asc">Date ↑ (oldest)</option>
-              <option value="avg-desc">Average ↓</option>
-              <option value="avg-asc">Average ↑</option>
-              <option value="votes-desc">Votes count ↓</option>
-              <option value="votes-asc">Votes count ↑</option>
-            </select>
-          </div>
-        </div>
-  
-        <div className="flex gap-2">
-          <button className="rounded-xl border px-3 py-2" onClick={onReset}>
-            Reset
-          </button>
-        </div>
+
+      <div className="flex gap-2">
+        <button className="rounded-xl border px-3 py-2 dark:border-zinc-700" onClick={onReset}>
+          Reset
+        </button>
       </div>
-    );
-  }
-  
+    </div>
+  );
+}
 
 // ============================
 // Profile – avatar + list of movies you picked (reuse HistoryCardExtended)
@@ -971,16 +1023,16 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
             </div>
           )}
           <div>
-            <div className="text-sm text-gray-700">
+            <div className="text-sm text-gray-700 dark:text-zinc-300">
               Logged in as <b>{user}</b>
             </div>
             <div className="mt-2 flex gap-2">
-              <label className="cursor-pointer rounded-xl border px-3 py-2 text-sm">
+              <label className="cursor-pointer rounded-xl border px-3 py-2 text-sm dark:border-zinc-700">
                 Change image
                 <input type="file" accept="image/*" onChange={onFile} className="hidden" />
               </label>
               {avatar && (
-                <button className="rounded-xl border px-3 py-2 text-sm" onClick={clearAvatar}>
+                <button className="rounded-xl border px-3 py-2 text-sm dark:border-zinc-700" onClick={clearAvatar}>
                   Remove
                 </button>
               )}
@@ -993,7 +1045,7 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
         <h3 className="mb-3 text-lg font-semibold">🎬 Movies you picked</h3>
         <div className="grid gap-3">
           {pickedByMe.length === 0 ? (
-            <div className="text-sm text-gray-600">No movies yet. Start one from the “Vote” tab.</div>
+            <div className="text-sm text-gray-600 dark:text-zinc-400">No movies yet. Start one from the “Vote” tab.</div>
           ) : (
             pickedByMe
               .slice()
@@ -1017,8 +1069,9 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
 // ============================
 
 export default function CinemaNightApp() {
+  const [theme, setTheme] = useState<Theme>(getInitialTheme());
+  useEffect(() => applyTheme(theme), [theme]);
 
-    
   const [user, setUser] = useState<string>("");
   const [tab, setTab] = useState<"vote" | "history" | "profile">("vote");
 
@@ -1028,109 +1081,97 @@ export default function CinemaNightApp() {
   const [activeRatings, setActiveRatings] = useState<Record<string, number>>({});
   const [historyMode, setHistoryMode] = useState<"extended" | "compact">("extended");
 
-    // Filters / sort for History
-    const [filterPicker, setFilterPicker] = useState<string>("");
-    const [filterGenre, setFilterGenre] = useState<string>("");
-    const [sortKey, setSortKey] = useState<"date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc">("date-desc");
-    const [isBackfilling, setIsBackfilling] = useState(false);
+  // Filters / sort for History
+  const [filterPicker, setFilterPicker] = useState<string>("");
+  const [filterGenre, setFilterGenre] = useState<string>("");
+  const [sortKey, setSortKey] = useState<"date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc">("date-desc");
+  const [isBackfilling, setIsBackfilling] = useState(false);
 
+  const backfillHistoryGenres = async () => {
+    if (isBackfilling) return;
+    setIsBackfilling(true);
+    try {
+      const list = lsGetJSON<any[]>(K_VIEWINGS, []);
+      let changed = false;
 
-    const backfillHistoryGenres = async () => {
-        if (isBackfilling) return;
-        setIsBackfilling(true);
-        try {
-          const list = lsGetJSON<any[]>(K_VIEWINGS, []);
-          let changed = false;
-      
-          // aggiorna in serie (meno rischio rate-limit); puoi fare in parallelo se vuoi.
-          for (let i = 0; i < list.length; i++) {
-            const v = list[i];
-            const hasGenres = Array.isArray(v?.movie?.genres) && v.movie.genres.length > 0;
-            if (hasGenres) continue;
-      
-            const enriched = await enrichFromTmdbByTitleOrId(v.movie);
-            if (enriched !== v.movie) {
-              list[i] = { ...v, movie: enriched };
-              changed = true;
-            }
-            // pausa delicata per TMDB
-            await sleep(200);
-          }
-      
-          if (changed) {
-            lsSetJSON(K_VIEWINGS, list);
-            setHistory(list);
-          }
-        } finally {
-          setIsBackfilling(false);
+      for (let i = 0; i < list.length; i++) {
+        const v = list[i];
+        const hasGenres = Array.isArray(v?.movie?.genres) && v.movie.genres.length > 0;
+        if (hasGenres) continue;
+
+        const enriched = await enrichFromTmdbByTitleOrId(v.movie);
+        if (enriched !== v.movie) {
+          list[i] = { ...v, movie: enriched };
+          changed = true;
         }
-      };
-      
+        await sleep(200);
+      }
 
+      if (changed) {
+        lsSetJSON(K_VIEWINGS, list);
+        setHistory(list);
+      }
+    } finally {
+      setIsBackfilling(false);
+    }
+  };
 
-    // only pickers that actually picked something
-    const pickerOptions = useMemo(() => {
-        const s = new Set<string>();
-        for (const h of history) if (h?.picked_by) s.add(h.picked_by);
-        return Array.from(s).sort((a, b) => a.localeCompare(b));
-    }, [history]);
-    
-    // genres present in history (TMDB details add movie.genres: {id,name}[])
-    const genreOptions = useMemo(() => {
-        const s = new Set<string>();
-        for (const h of history) {
+  const pickerOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const h of history) if (h?.picked_by) s.add(h.picked_by);
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [history]);
+
+  const genreOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const h of history) {
+      const arr = (h?.movie?.genres || []) as Array<{ id: number; name: string }>;
+      arr?.forEach((g) => g?.name && s.add(g.name));
+    }
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [history]);
+
+  const filteredSortedHistory = useMemo(() => {
+    let L = history.slice();
+
+    if (filterPicker) L = L.filter(h => (h?.picked_by || "") === filterPicker);
+
+    if (filterGenre) {
+      L = L.filter(h => {
         const arr = (h?.movie?.genres || []) as Array<{ id: number; name: string }>;
-        arr?.forEach((g) => g?.name && s.add(g.name));
-        }
-        return Array.from(s).sort((a, b) => a.localeCompare(b));
-    }, [history]);
+        return arr?.some(g => g?.name === filterGenre);
+      });
+    }
 
+    L.sort((a, b) => {
+      const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
+      const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
+      const aAvg = getAverage(a?.ratings);
+      const bAvg = getAverage(b?.ratings);
+      const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
+      const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
 
-    const filteredSortedHistory = useMemo(() => {
-        let L = history.slice();
-      
-        // filter by picker
-        if (filterPicker) L = L.filter(h => (h?.picked_by || "") === filterPicker);
-      
-        // filter by genre (movie.genres array)
-        if (filterGenre) {
-          L = L.filter(h => {
-            const arr = (h?.movie?.genres || []) as Array<{ id: number; name: string }>;
-            return arr?.some(g => g?.name === filterGenre);
-          });
-        }
-      
-        // sort
-        L.sort((a, b) => {
-          const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
-          const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
-          const aAvg = getAverage(a?.ratings);
-          const bAvg = getAverage(b?.ratings);
-          const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
-          const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
-      
-          switch (sortKey) {
-            case "date-asc":
-              return aDate - bDate;
-            case "date-desc":
-              return bDate - aDate;
-            case "avg-asc":
-              return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
-            case "avg-desc":
-              return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
-            case "votes-asc":
-              return aVotes - bVotes;
-            case "votes-desc":
-              return bVotes - aVotes;
-            default:
-              return 0;
-          }
-        });
-      
-        return L;
-      }, [history, filterPicker, filterGenre, sortKey]);
-      
-  // Known users from history (for datalist)
+      switch (sortKey) {
+        case "date-asc":
+          return aDate - bDate;
+        case "date-desc":
+          return bDate - aDate;
+        case "avg-asc":
+          return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
+        case "avg-desc":
+          return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
+        case "votes-asc":
+          return aVotes - bVotes;
+        case "votes-desc":
+          return bVotes - aVotes;
+        default:
+          return 0;
+      }
+    });
+
+    return L;
+  }, [history, filterPicker, filterGenre, sortKey]);
+
   const knownUsers = useMemo(() => {
     const set = new Set<string>();
     for (const h of history) {
@@ -1139,48 +1180,60 @@ export default function CinemaNightApp() {
     }
     if (user) set.add(user);
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-    }, [history, user]);
+  }, [history, user]);
 
-    // Init + realtime sync + seed if empty
-    useEffect(() => {
-        (async () => {
-        setUser(lsGetJSON<string | null>(K_USER, "") || "");
+  // Init + realtime sync + seed if empty
+  useEffect(() => {
+    (async () => {
+      // 🔄 resetta SEMPRE la history salvata
+      localStorage.removeItem(K_VIEWINGS);
 
-        // history with optional seeding
-    let hist = lsGetJSON<any[]>(K_VIEWINGS, []);
-    if (hist.length === 0) {
-    // try dynamic import of ./seed (if exists)
-    try {
-        // @ts-ignore
-        const mod = await import("./seed");
-        if (Array.isArray(mod?.CIRCO_SEED) && mod.CIRCO_SEED.length) {
-        hist = mod.CIRCO_SEED as any[];
-        }
-    } catch {}
-    // fallback: try /circo_seed.json in public
-    if (hist.length === 0) {
+      // user
+      setUser(lsGetJSON<string | null>(K_USER, "") || "");
+
+      // history con seeding
+      let hist = lsGetJSON<any[]>(K_VIEWINGS, []);
+      if (hist.length === 0) {
         try {
-        const res = await fetch("/circo_seed.json");
-        if (res.ok) {
-            const arr = await res.json();
-            if (Array.isArray(arr) && arr.length) hist = arr;
-        }
+          // @ts-ignore
+          const mod = await import("./seed");
+          if (Array.isArray(mod?.CIRCO_SEED) && mod.CIRCO_SEED.length) {
+            hist = mod.CIRCO_SEED as any[];
+          }
         } catch {}
-    }
-    if (hist.length > 0) {
-        // 🔄 inverti l'ordine del CSV/seed: ultima riga in cima
-        hist = hist.slice().reverse();
-        lsSetJSON(K_VIEWINGS, hist);
-    }
-    }
-    setHistory(hist);
+
+        if (hist.length === 0) {
+          try {
+            const res = await fetch("/circo_seed.json");
+            if (res.ok) {
+              const arr = await res.json();
+              if (Array.isArray(arr) && arr.length) hist = arr;
+            }
+          } catch {}
+        }
+
+        if (hist.length > 0) {
+          hist = hist.slice().reverse();
+          lsSetJSON(K_VIEWINGS, hist);
+        }
+      }
+
+      setHistory(hist);
       setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
       setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
 
+      // sync multi-tab
       const onStorage = (e: StorageEvent) => {
-        if (e.key === K_ACTIVE_VOTE) setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
-        if (e.key === K_ACTIVE_RATINGS) setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
-        if (e.key === K_VIEWINGS) setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
+        if (e.key === K_ACTIVE_VOTE)
+          setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
+        if (e.key === K_ACTIVE_RATINGS)
+          setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+        if (e.key === K_VIEWINGS)
+          setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
+        if (e.key === K_THEME) {
+          const t = (localStorage.getItem(K_THEME) as Theme) || "dark";
+          applyTheme(t);
+        }
       };
       window.addEventListener("storage", onStorage);
       return () => window.removeEventListener("storage", onStorage);
@@ -1214,9 +1267,8 @@ export default function CinemaNightApp() {
   };
 
   const startVoting = async (movie: any, pickedBy: string) => {
-    // completa i metadati (soprattutto genres) dal TMDB se servono
     const movieWithGenres = await ensureGenres(movie);
-  
+
     const session = {
       id: Date.now(),
       movie: {
@@ -1226,15 +1278,13 @@ export default function CinemaNightApp() {
       picked_by: pickedBy,
       started_at: new Date().toISOString(),
     };
-  
+
     lsSetJSON(K_ACTIVE_VOTE, session);
     lsSetJSON(K_ACTIVE_RATINGS, {});
     setActiveVote(session);
     setActiveRatings({});
   };
-  
 
-  // Send vote
   const sendVote = (score: number) => {
     if (!user || !activeVote) return;
     const next = { ...activeRatings, [user]: roundToQuarter(score) };
@@ -1242,7 +1292,6 @@ export default function CinemaNightApp() {
     setActiveRatings(next);
   };
 
-  // End voting → archive
   const endVoting = () => {
     if (!activeVote) return;
     const entry = {
@@ -1263,12 +1312,12 @@ export default function CinemaNightApp() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 text-gray-900">
+    <div className="min-h-screen bg-gray-50 p-4 text-gray-900 dark:bg-zinc-950 dark:text-zinc-100">
       {!user ? (
         <Login onLogin={login} />
       ) : (
         <div className="mx-auto max-w-6xl">
-          <Header user={user} onLogout={logout} tab={tab} setTab={setTab} />
+          <Header user={user} onLogout={logout} tab={tab} setTab={setTab} theme={theme} setTheme={setTheme} />
 
           {tab === "vote" && (
             <div className="mt-2 grid gap-4">
@@ -1290,188 +1339,179 @@ export default function CinemaNightApp() {
             </div>
           )}
 
-{tab === "history" && (
-  <div className="mt-2">
-    <Card>
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-lg font-semibold">📜 Past nights</h3>
-        <button
-          className="rounded-xl border px-3 py-1 text-sm"
-          onClick={() =>
-            setHistoryMode(historyMode === "extended" ? "compact" : "extended")
-          }
-        >
-          Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
-        </button>
-      </div>
+          {tab === "history" && (
+            <div className="mt-2">
+              <Card>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">📜 Past nights</h3>
+                  <button
+                    className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"
+                    onClick={() =>
+                      setHistoryMode(historyMode === "extended" ? "compact" : "extended")
+                    }
+                  >
+                    Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
+                  </button>
+                </div>
 
-      {/* ── Filters + Sort ───────────────────────────────────────────── */}
-      {(() => {
-        // options
-        const pickerOptions = Array.from(
-          new Set(history.map((h) => h?.picked_by).filter(Boolean))
-        ).sort((a: string, b: string) => a.localeCompare(b));
+                {/* ── Filters + Sort ───────────────────────────────────────────── */}
+                {(() => {
+                  const pickerOptions = Array.from(
+                    new Set(history.map((h) => h?.picked_by).filter(Boolean))
+                  ).sort((a: string, b: string) => a.localeCompare(b));
 
-        const genreOptions = Array.from(
-          new Set(
-            history.flatMap((h) =>
-              ((h?.movie?.genres as Array<{ name: string }>) || []).map(
-                (g) => g?.name
-              )
-            )
-          )
-        )
-          .filter(Boolean)
-          .sort((a: string, b: string) => a.localeCompare(b));
-
-        return (
-          <div className="grid gap-3 md:grid-cols-4">
-            {/* Picker */}
-            <div className="flex flex-col">
-              <label className="text-xs text-gray-600">Picked by</label>
-              <select
-                className="rounded-xl border px-3 py-2"
-                value={filterPicker}
-                onChange={(e) => setFilterPicker(e.target.value)}
-              >
-                <option value="">All</option>
-                {pickerOptions.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Genre */}
-            <div className="flex flex-col">
-              <label className="text-xs text-gray-600">Genre</label>
-              <select
-                className="rounded-xl border px-3 py-2"
-                value={filterGenre}
-                onChange={(e) => setFilterGenre(e.target.value)}
-              >
-                <option value="">All</option>
-                {genreOptions.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Sort */}
-            <div className="flex flex-col">
-              <label className="text-xs text-gray-600">Sort by</label>
-              <select
-                className="rounded-xl border px-3 py-2"
-                value={sortKey}
-                onChange={(e) =>
-                  setSortKey(
-                    e.target.value as
-                      | "date-desc"
-                      | "date-asc"
-                      | "avg-desc"
-                      | "avg-asc"
-                      | "votes-desc"
-                      | "votes-asc"
+                  const genreOptions = Array.from(
+                    new Set(
+                      history.flatMap((h) =>
+                        ((h?.movie?.genres as Array<{ name: string }>) || []).map(
+                          (g) => g?.name
+                        )
+                      )
+                    )
                   )
-                }
-              >
-                <option value="date-desc">Date ↓ (newest)</option>
-                <option value="date-asc">Date ↑ (oldest)</option>
-                <option value="avg-desc">Average ↓</option>
-                <option value="avg-asc">Average ↑</option>
-                <option value="votes-desc">Votes count ↓</option>
-                <option value="votes-asc">Votes count ↑</option>
-              </select>
+                    .filter(Boolean)
+                    .sort((a: string, b: string) => a.localeCompare(b));
+
+                  return (
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <div className="flex flex-col">
+                        <label className="text-xs text-gray-600 dark:text-zinc-400">Picked by</label>
+                        <select
+                          className="rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+                          value={filterPicker}
+                          onChange={(e) => setFilterPicker(e.target.value)}
+                        >
+                          <option value="">All</option>
+                          {pickerOptions.map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col">
+                        <label className="text-xs text-gray-600 dark:text-zinc-400">Genre</label>
+                        <select
+                          className="rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+                          value={filterGenre}
+                          onChange={(e) => setFilterGenre(e.target.value)}
+                        >
+                          <option value="">All</option>
+                          {genreOptions.map((g) => (
+                            <option key={g} value={g}>
+                              {g}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col">
+                        <label className="text-xs text-gray-600 dark:text-zinc-400">Sort by</label>
+                        <select
+                          className="rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+                          value={sortKey}
+                          onChange={(e) =>
+                            setSortKey(
+                              e.target.value as
+                                | "date-desc"
+                                | "date-asc"
+                                | "avg-desc"
+                                | "avg-asc"
+                                | "votes-desc"
+                                | "votes-asc"
+                            )
+                          }
+                        >
+                          <option value="date-desc">Date ↓ (newest)</option>
+                          <option value="date-asc">Date ↑ (oldest)</option>
+                          <option value="avg-desc">Average ↓</option>
+                          <option value="avg-asc">Average ↑</option>
+                          <option value="votes-desc">Votes count ↓</option>
+                          <option value="votes-asc">Votes count ↑</option>
+                        </select>
+                      </div>
+
+                      <div className="flex items-end">
+                        <button
+                          className="w-full rounded-xl border px-3 py-2 dark:border-zinc-700"
+                          onClick={() => {
+                            setFilterPicker("");
+                            setFilterGenre("");
+                            setSortKey("date-desc");
+                          }}
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ── Results ─────────────────────────────────────────────────── */}
+                <div className="mt-4 grid gap-3">
+                  {history.length === 0 && (
+                    <div className="text-sm text-gray-600 dark:text-zinc-400">
+                      No entries yet. Start a vote from the “Vote” tab.
+                    </div>
+                  )}
+
+                  {(() => {
+                    let L = history.slice();
+                    if (filterPicker) L = L.filter((h) => h?.picked_by === filterPicker);
+                    if (filterGenre) {
+                      L = L.filter((h) =>
+                        ((h?.movie?.genres as Array<{ name: string }>) || []).some(
+                          (g) => g?.name === filterGenre
+                        )
+                      );
+                    }
+
+                    const getAvg = (r?: Record<string, number> | null) => {
+                      if (!r) return null;
+                      const vals = Object.values(r).map(Number);
+                      if (!vals.length) return null;
+                      return vals.reduce((a, b) => a + b, 0) / vals.length;
+                    };
+
+                    L.sort((a, b) => {
+                      const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
+                      const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
+                      const aAvg = getAvg(a?.ratings);
+                      const bAvg = getAvg(b?.ratings);
+                      const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
+                      const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
+
+                      switch (sortKey) {
+                        case "date-asc":
+                          return aDate - bDate;
+                        case "date-desc":
+                          return bDate - aDate;
+                        case "avg-asc":
+                          return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
+                        case "avg-desc":
+                          return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
+                        case "votes-asc":
+                          return aVotes - bVotes;
+                        case "votes-desc":
+                          return bVotes - aVotes;
+                        default:
+                          return 0;
+                      }
+                    });
+
+                    return L.map((v) =>
+                      historyMode === "extended" ? (
+                        <HistoryCardExtended key={v.id} v={v} />
+                      ) : (
+                        <HistoryCardCompact key={v.id} v={v} />
+                      )
+                    );
+                  })()}
+                </div>
+              </Card>
             </div>
-
-            {/* Reset */}
-            <div className="flex items-end">
-              <button
-                className="w-full rounded-xl border px-3 py-2"
-                onClick={() => {
-                  setFilterPicker("");
-                  setFilterGenre("");
-                  setSortKey("date-desc");
-                }}
-              >
-                Reset
-              </button>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Results ─────────────────────────────────────────────────── */}
-      <div className="mt-4 grid gap-3">
-        {history.length === 0 && (
-          <div className="text-sm text-gray-600">
-            No entries yet. Start a vote from the “Vote” tab.
-          </div>
-        )}
-
-        {(() => {
-          // filter
-          let L = history.slice();
-          if (filterPicker) L = L.filter((h) => h?.picked_by === filterPicker);
-          if (filterGenre) {
-            L = L.filter((h) =>
-              ((h?.movie?.genres as Array<{ name: string }>) || []).some(
-                (g) => g?.name === filterGenre
-              )
-            );
-          }
-
-          // helpers
-          const getAvg = (r?: Record<string, number> | null) => {
-            if (!r) return null;
-            const vals = Object.values(r).map(Number);
-            if (!vals.length) return null;
-            return vals.reduce((a, b) => a + b, 0) / vals.length;
-          };
-
-          // sort
-          L.sort((a, b) => {
-            const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
-            const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
-            const aAvg = getAvg(a?.ratings);
-            const bAvg = getAvg(b?.ratings);
-            const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
-            const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
-
-            switch (sortKey) {
-              case "date-asc":
-                return aDate - bDate;
-              case "date-desc":
-                return bDate - aDate;
-              case "avg-asc":
-                return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
-              case "avg-desc":
-                return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
-              case "votes-asc":
-                return aVotes - bVotes;
-              case "votes-desc":
-                return bVotes - aVotes;
-              default:
-                return 0;
-            }
-          });
-
-          return L.map((v) =>
-            historyMode === "extended" ? (
-              <HistoryCardExtended key={v.id} v={v} />
-            ) : (
-              <HistoryCardCompact key={v.id} v={v} />
-            )
-          );
-        })()}
-      </div>
-    </Card>
-  </div>
-)}
-
+          )}
 
           {tab === "profile" && (
             <div className="mt-2 grid gap-4">
