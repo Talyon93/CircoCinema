@@ -912,8 +912,8 @@ function HistoryCardCompact({ v }: { v: any }) {
                 setSort(e.target.value as any)
               }
             >
-              <option value="date-desc">Date ↓ (oldest)</option>
-              <option value="date-asc">Date ↑ (newest)</option>
+              <option value="date-desc">Date ↓ (newest)</option>
+              <option value="date-asc">Date ↑ (oldest)</option>
               <option value="avg-desc">Average ↓</option>
               <option value="avg-asc">Average ↑</option>
               <option value="votes-desc">Votes count ↓</option>
@@ -1017,6 +1017,8 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
 // ============================
 
 export default function CinemaNightApp() {
+
+    
   const [user, setUser] = useState<string>("");
   const [tab, setTab] = useState<"vote" | "history" | "profile">("vote");
 
@@ -1376,8 +1378,8 @@ export default function CinemaNightApp() {
                   )
                 }
               >
-                <option value="date-desc">Date ↓ (oldest)</option>
-                <option value="date-asc">Date ↑ (newest)</option>
+                <option value="date-desc">Date ↓ (newest)</option>
+                <option value="date-asc">Date ↑ (oldest)</option>
                 <option value="avg-desc">Average ↓</option>
                 <option value="avg-asc">Average ↑</option>
                 <option value="votes-desc">Votes count ↓</option>
