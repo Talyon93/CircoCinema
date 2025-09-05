@@ -467,6 +467,116 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
   );
 }
 
+function EditMovieDialog({
+    open,
+    initialTitle = "",
+    onClose,
+    onSelect,
+  }: {
+    open: boolean;
+    initialTitle?: string;
+    onClose: () => void;
+    onSelect: (movie: any) => void;
+  }) {
+    const [q, setQ] = useState(initialTitle);
+    const [loading, setLoading] = useState(false);
+    const [results, setResults] = useState<any[]>([]);
+    const [err, setErr] = useState<string | null>(null);
+  
+    useEffect(() => {
+      setQ(initialTitle);
+      setResults([]);
+      setErr(null);
+    }, [initialTitle]);
+  
+    if (!open) return null;
+  
+    const search = async () => {
+      setErr(null);
+      setLoading(true);
+      try {
+        const res = await tmdbSearch(q);
+        setResults(res.slice(0, 12));
+      } catch (e: any) {
+        setErr(e?.message || "Search error");
+      } finally {
+        setLoading(false);
+      }
+    };
+  
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="w-full max-w-2xl rounded-2xl border bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-lg font-semibold">Edit movie</h3>
+            <button className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700" onClick={onClose}>
+              Close
+            </button>
+          </div>
+  
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <label className="text-xs text-gray-600 dark:text-zinc-400">Search on TMDB</label>
+              <input
+                className="w-full rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+                placeholder="e.g. Lucky Number Slevin"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && search()}
+                autoFocus
+              />
+            </div>
+            <button
+              onClick={search}
+              className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
+              disabled={!q || loading}
+            >
+              {loading ? "..." : "Search"}
+            </button>
+          </div>
+  
+          {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+  
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {results.map((r) => (
+              <div
+                key={r.id}
+                className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50 dark:hover:bg-zinc-800 border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+                onClick={() => onSelect(r)}
+                title="Use this movie"
+              >
+                {r.poster_path && (
+                  <img
+                    src={posterUrl(r.poster_path, "w185")}
+                    alt={r.title}
+                    className="h-24 w-16 rounded-lg object-cover"
+                  />
+                )}
+                <div className="flex-1">
+                  <div className="font-semibold">
+                    {r.title}{" "}
+                    {r.release_date ? (
+                      <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span>
+                    ) : null}
+                  </div>
+                  <div className="line-clamp-3 text-sm text-gray-700 dark:text-zinc-300">
+                    {r.overview}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!loading && results.length === 0 && (
+              <div className="rounded-xl border p-3 text-sm text-gray-600 dark:border-zinc-700 dark:text-zinc-400">
+                No results yet — search something above.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
+
 function RatingBar({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
     <div className="flex items-center gap-3">
@@ -746,7 +856,7 @@ function ActiveVoting({
 // ============================
 // History cards (Extended + Compact)
 // ============================
-function HistoryCardExtended({ v }: { v: any }) {
+function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void }) {
   const ratings = (v.ratings || {}) as Record<string, number>;
   const scores = Object.values(ratings).map(Number);
   const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
@@ -820,23 +930,38 @@ function HistoryCardExtended({ v }: { v: any }) {
   return (
     <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
         {/* HEADER */}
-        <div className="mb-3 flex flex-wrap items-center gap-3">
-          {v.picked_by && (
-            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
-              <PickerAvatar name={v.picked_by} />
-              <span className="text-sm font-medium">{v.picked_by}</span>
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+            {v.picked_by && (
+                <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
+                <PickerAvatar name={v.picked_by} />
+                <span className="text-sm font-medium">{v.picked_by}</span>
+                </div>
+            )}
+            <div className="mx-1 text-gray-300">•</div>
+
+            {/* Titolo */}
+            <h3 className="min-w-0 text-lg font-semibold leading-tight">
+                <span className="break-words">{v.movie?.title || "Untitled"}</span>
+            </h3>
+
+            {/* ⬅️ Bottone Edit AGGIUNTO QUI, subito dopo il titolo */}
+            {onEdit && (
+                <button
+                className="ml-2 rounded-full border px-2.5 py-1 text-xs dark:border-zinc-700"
+                onClick={() => onEdit(v.id)}
+                title="Edit movie"
+                >
+                Edit
+                </button>
+            )}
+
+            {v.started_at && (
+                <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
+                {new Date(v.started_at).toLocaleString()}
+                </span>
+            )}
             </div>
-          )}
-          <div className="mx-1 text-gray-300">•</div>
-          <h3 className="min-w-0 text-lg font-semibold leading-tight">
-            <span className="break-words">{v.movie?.title || "Untitled"}</span>
-          </h3>
-          {v.started_at && (
-            <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
-              {new Date(v.started_at).toLocaleString()}
-            </span>
-          )}
-        </div>
+
 
         {/* BODY: poster + overview */}
         <div className="grid gap-4 md:grid-cols-[120px,1fr]">
@@ -899,8 +1024,8 @@ function HistoryCardExtended({ v }: { v: any }) {
   );
 }
 
-function HistoryCardCompact({ v }: { v: any }) {
-  const ratings = (v.ratings || {}) as Record<string, number>;
+function HistoryCardCompact({ v, onEdit }: { v: any; onEdit?: (id: any) => void }) {
+    const ratings = (v.ratings || {}) as Record<string, number>;
   const scores = Object.values(ratings).map(Number);
   const avg =
     scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
@@ -934,17 +1059,29 @@ function HistoryCardCompact({ v }: { v: any }) {
     <div className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
       <div className="flex flex-wrap items-center gap-2">
         {v.picked_by && (
-          <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
+            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
             <PickerAvatar name={v.picked_by} />
             <span className="text-sm font-medium">{v.picked_by}</span>
-          </div>
+            </div>
         )}
         <div className="mx-1 text-gray-300">•</div>
-        <div className="min-w-0 text-[15px] font-semibold leading-tight">
-          <span className="break-words">{v.movie?.title || "Untitled"}</span>
-        </div>
-      </div>
 
+  {/* Titolo */}
+  <div className="min-w-0 text-[15px] font-semibold leading-tight">
+    <span className="break-words">{v.movie?.title || "Untitled"}</span>
+  </div>
+
+  {/* ⬅️ Bottone Edit AGGIUNTO QUI */}
+  {onEdit && (
+    <button
+      className="ml-2 rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700"
+      onClick={() => onEdit(v.id)}
+      title="Edit movie"
+    >
+      Edit
+    </button>
+  )}
+</div>
       <div className="mt-3 flex flex-wrap items-center gap-3">
         {avg !== null && (
           <div
@@ -1469,6 +1606,7 @@ export default function CinemaNightApp() {
 
   const [user, setUser] = useState<string>("");
   const [tab, setTab] = useState<"vote" | "history" | "profile" | "stats">("vote");
+const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } | null>(null);
 
   const [pickedMovie, setPickedMovie] = useState<any | null>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -1700,6 +1838,16 @@ export default function CinemaNightApp() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [history.length, isBackfillingRuntime]);
     
+    function updateViewingMovie(viewingId: any, nextMovie: any) {
+        setHistory((prev) => {
+          const L = prev.map((v) =>
+            v.id === viewingId ? { ...v, movie: nextMovie } : v
+          );
+          lsSetJSON(K_VIEWINGS, L);
+          return L;
+        });
+      }
+
   // Auth
   const login = (name: string) => {
     localStorage.setItem(K_USER, name);
@@ -1817,6 +1965,20 @@ export default function CinemaNightApp() {
                   </button>
                 </div>
 
+
+\           {editingViewing && (
+                <EditMovieDialog
+                    open
+                    initialTitle={editingViewing.title}
+                    onClose={() => setEditingViewing(null)}
+                    onSelect={async (tmdbMovie) => {
+                    const det = await tmdbDetails(tmdbMovie.id);
+                    const enriched = await ensureGenres(det || tmdbMovie);
+                    updateViewingMovie(editingViewing.id, enriched);
+                    setEditingViewing(null);
+                    }}
+                />
+                )}
                 {/* ── Filters + Sort ───────────────────────────────────────────── */}
                 {(() => {
                   const pickerOptions = Array.from(
@@ -1964,12 +2126,20 @@ export default function CinemaNightApp() {
                     });
 
                     return L.map((v) =>
-                      historyMode === "extended" ? (
-                        <HistoryCardExtended key={v.id} v={v} />
-                      ) : (
-                        <HistoryCardCompact key={v.id} v={v} />
-                      )
-                    );
+                        historyMode === "extended" ? (
+                          <HistoryCardExtended
+                            key={v.id}
+                            v={v}
+                            onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
+                          />
+                        ) : (
+                          <HistoryCardCompact
+                            key={v.id}
+                            v={v}
+                            onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
+                          />
+                        )
+                      );
                   })()}
                 </div>
               </Card>
