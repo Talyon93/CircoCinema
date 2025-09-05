@@ -25,6 +25,58 @@ const K_TMDB_CACHE = "cn_tmdb_cache";         // cache poster/overview per titol
 // ============================
 // Helpers
 // ============================
+
+// piccola pausa per non bombardare TMDB (opzionale)
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+/** Completa poster/overview/genres per un film dato, usando TMDB. */
+async function enrichFromTmdbByTitleOrId(movie: any) {
+  try {
+    // se già ha i generi esci
+    if (Array.isArray(movie?.genres) && movie.genres.length) return movie;
+
+    // se ho l'id TMDB, prendo i dettagli diretti
+    if (movie?.id) {
+      const det = await tmdbDetails(movie.id);
+      if (det) {
+        return {
+          ...movie,
+          poster_path: movie.poster_path ?? det.poster_path,
+          overview: movie.overview ?? det.overview,
+          genres: det.genres || [],
+        };
+      }
+    }
+
+    // altrimenti cerco per titolo e poi details
+    const title = movie?.title || "";
+    if (!title) return movie;
+
+    const search = await tmdbSearch(title);
+    const first = search?.[0];
+    if (!first?.id) return movie;
+    const det = await tmdbDetails(first.id);
+    if (!det) return movie;
+
+    return {
+      ...movie,
+      id: movie.id ?? first.id,
+      poster_path: movie.poster_path ?? det.poster_path ?? first.poster_path,
+      overview: movie.overview ?? det.overview ?? "",
+      genres: det.genres || [],
+    };
+  } catch {
+    return movie;
+  }
+}
+
+function getAverage(r: Record<string, number> | undefined | null) {
+    if (!r) return null;
+    const vals = Object.values(r).map(Number);
+    if (!vals.length) return null;
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  }
+
 function posterUrl(p?: string, size: "w185" | "w342" = "w185") {
   if (!p) return "";
   if (p.startsWith("http")) return p;
@@ -87,6 +139,31 @@ async function tmdbDetails(tmdbId: number) {
     return null;
   }
 }
+
+// Assicura che il movie abbia almeno genres (e, già che ci siamo, completiamo poster/overview se mancano)
+async function ensureGenres(movie: any): Promise<any> {
+    try {
+      // Se i generi ci sono già, esci
+      if (Array.isArray(movie?.genres) && movie.genres.length) return movie;
+  
+      // Se ho un id TMDB, prendo i dettagli completi
+      if (movie?.id) {
+        const det = await tmdbDetails(movie.id);
+        if (det) {
+          return {
+            ...movie,
+            // priorità ai campi già presenti, ma se mancano prendili dai dettagli
+            poster_path: movie.poster_path ?? det.poster_path,
+            overview: movie.overview ?? det.overview,
+            genres: det.genres || [],
+          };
+        }
+      }
+    } catch {}
+    // fallback: torna com’è
+    return movie;
+  }
+  
 
 // TMDB metadata cache for History seed entries
 type MetaCache = Record<string, { poster_path?: string; overview?: string }>;
@@ -771,6 +848,88 @@ function HistoryCardCompact({ v }: { v: any }) {
   }
   
   
+  function HistoryFilters({
+    pickers,
+    genres,
+    picker,
+    setPicker,
+    genre,
+    setGenre,
+    sort,
+    setSort,
+    onReset
+  }: {
+    pickers: string[];
+    genres: string[];
+    picker: string;
+    setPicker: (v: string) => void;
+    genre: string;
+    setGenre: (v: string) => void;
+    sort: "date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc";
+    setSort: (v: "date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc") => void;
+    onReset: () => void;
+  }) {
+    return (
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div className="grid gap-3 md:grid-cols-3">
+          {/* Picker */}
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-600">Picked by</label>
+            <select
+              className="rounded-xl border px-3 py-2"
+              value={picker}
+              onChange={(e) => setPicker(e.target.value)}
+            >
+              <option value="">All</option>
+              {pickers.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+  
+          {/* Genre */}
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-600">Genre</label>
+            <select
+              className="rounded-xl border px-3 py-2"
+              value={genre}
+              onChange={(e) => setGenre(e.target.value)}
+            >
+              <option value="">All</option>
+              {genres.map((g) => (
+                <option key={g} value={g}>{g}</option>
+              ))}
+            </select>
+          </div>
+  
+          {/* Sort */}
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-600">Sort by</label>
+            <select
+              className="rounded-xl border px-3 py-2"
+              value={sort}
+              onChange={(e) =>
+                setSort(e.target.value as any)
+              }
+            >
+              <option value="date-desc">Date ↓ (oldest)</option>
+              <option value="date-asc">Date ↑ (newest)</option>
+              <option value="avg-desc">Average ↓</option>
+              <option value="avg-asc">Average ↑</option>
+              <option value="votes-desc">Votes count ↓</option>
+              <option value="votes-asc">Votes count ↑</option>
+            </select>
+          </div>
+        </div>
+  
+        <div className="flex gap-2">
+          <button className="rounded-xl border px-3 py-2" onClick={onReset}>
+            Reset
+          </button>
+        </div>
+      </div>
+    );
+  }
   
 
 // ============================
@@ -856,6 +1015,7 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
 // ============================
 // App
 // ============================
+
 export default function CinemaNightApp() {
   const [user, setUser] = useState<string>("");
   const [tab, setTab] = useState<"vote" | "history" | "profile">("vote");
@@ -866,6 +1026,108 @@ export default function CinemaNightApp() {
   const [activeRatings, setActiveRatings] = useState<Record<string, number>>({});
   const [historyMode, setHistoryMode] = useState<"extended" | "compact">("extended");
 
+    // Filters / sort for History
+    const [filterPicker, setFilterPicker] = useState<string>("");
+    const [filterGenre, setFilterGenre] = useState<string>("");
+    const [sortKey, setSortKey] = useState<"date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc">("date-desc");
+    const [isBackfilling, setIsBackfilling] = useState(false);
+
+
+    const backfillHistoryGenres = async () => {
+        if (isBackfilling) return;
+        setIsBackfilling(true);
+        try {
+          const list = lsGetJSON<any[]>(K_VIEWINGS, []);
+          let changed = false;
+      
+          // aggiorna in serie (meno rischio rate-limit); puoi fare in parallelo se vuoi.
+          for (let i = 0; i < list.length; i++) {
+            const v = list[i];
+            const hasGenres = Array.isArray(v?.movie?.genres) && v.movie.genres.length > 0;
+            if (hasGenres) continue;
+      
+            const enriched = await enrichFromTmdbByTitleOrId(v.movie);
+            if (enriched !== v.movie) {
+              list[i] = { ...v, movie: enriched };
+              changed = true;
+            }
+            // pausa delicata per TMDB
+            await sleep(200);
+          }
+      
+          if (changed) {
+            lsSetJSON(K_VIEWINGS, list);
+            setHistory(list);
+          }
+        } finally {
+          setIsBackfilling(false);
+        }
+      };
+      
+
+
+    // only pickers that actually picked something
+    const pickerOptions = useMemo(() => {
+        const s = new Set<string>();
+        for (const h of history) if (h?.picked_by) s.add(h.picked_by);
+        return Array.from(s).sort((a, b) => a.localeCompare(b));
+    }, [history]);
+    
+    // genres present in history (TMDB details add movie.genres: {id,name}[])
+    const genreOptions = useMemo(() => {
+        const s = new Set<string>();
+        for (const h of history) {
+        const arr = (h?.movie?.genres || []) as Array<{ id: number; name: string }>;
+        arr?.forEach((g) => g?.name && s.add(g.name));
+        }
+        return Array.from(s).sort((a, b) => a.localeCompare(b));
+    }, [history]);
+
+
+    const filteredSortedHistory = useMemo(() => {
+        let L = history.slice();
+      
+        // filter by picker
+        if (filterPicker) L = L.filter(h => (h?.picked_by || "") === filterPicker);
+      
+        // filter by genre (movie.genres array)
+        if (filterGenre) {
+          L = L.filter(h => {
+            const arr = (h?.movie?.genres || []) as Array<{ id: number; name: string }>;
+            return arr?.some(g => g?.name === filterGenre);
+          });
+        }
+      
+        // sort
+        L.sort((a, b) => {
+          const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
+          const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
+          const aAvg = getAverage(a?.ratings);
+          const bAvg = getAverage(b?.ratings);
+          const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
+          const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
+      
+          switch (sortKey) {
+            case "date-asc":
+              return aDate - bDate;
+            case "date-desc":
+              return bDate - aDate;
+            case "avg-asc":
+              return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
+            case "avg-desc":
+              return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
+            case "votes-asc":
+              return aVotes - bVotes;
+            case "votes-desc":
+              return bVotes - aVotes;
+            default:
+              return 0;
+          }
+        });
+      
+        return L;
+      }, [history, filterPicker, filterGenre, sortKey]);
+      
   // Known users from history (for datalist)
   const knownUsers = useMemo(() => {
     const set = new Set<string>();
@@ -923,6 +1185,16 @@ export default function CinemaNightApp() {
     })();
   }, []);
 
+  useEffect(() => {
+    const hasAnyGenre = history.some(
+      (h) => Array.isArray(h?.movie?.genres) && h.movie.genres.length > 0
+    );
+    if (!hasAnyGenre && history.length > 0) {
+      backfillHistoryGenres();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [history.length]);
+
   // Auth
   const login = (name: string) => {
     localStorage.setItem(K_USER, name);
@@ -939,14 +1211,26 @@ export default function CinemaNightApp() {
     setPickedMovie(details || res);
   };
 
-  // Start voting
-  const startVoting = (movie: any, pickedBy: string) => {
-    const session = { id: Date.now(), movie, picked_by: pickedBy, started_at: new Date().toISOString() };
+  const startVoting = async (movie: any, pickedBy: string) => {
+    // completa i metadati (soprattutto genres) dal TMDB se servono
+    const movieWithGenres = await ensureGenres(movie);
+  
+    const session = {
+      id: Date.now(),
+      movie: {
+        ...movieWithGenres,
+        genres: Array.isArray(movieWithGenres?.genres) ? movieWithGenres.genres : [],
+      },
+      picked_by: pickedBy,
+      started_at: new Date().toISOString(),
+    };
+  
     lsSetJSON(K_ACTIVE_VOTE, session);
     lsSetJSON(K_ACTIVE_RATINGS, {});
     setActiveVote(session);
     setActiveRatings({});
   };
+  
 
   // Send vote
   const sendVote = (score: number) => {
@@ -1004,41 +1288,188 @@ export default function CinemaNightApp() {
             </div>
           )}
 
-          {tab === "history" && (
-            <div className="mt-2">
-              <Card>
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold">📜 Past nights</h3>
-                  <button
-                    className="rounded-xl border px-3 py-1 text-sm"
-                    onClick={() => setHistoryMode(historyMode === "extended" ? "compact" : "extended")}
-                  >
-                    Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
-                  </button>
-                </div>
-                <div className="grid gap-3">
-                  {history.length === 0 && <div className="text-sm text-gray-600">No entries yet. Start a vote from the “Vote” tab.</div>}
+{tab === "history" && (
+  <div className="mt-2">
+    <Card>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-lg font-semibold">📜 Past nights</h3>
+        <button
+          className="rounded-xl border px-3 py-1 text-sm"
+          onClick={() =>
+            setHistoryMode(historyMode === "extended" ? "compact" : "extended")
+          }
+        >
+          Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
+        </button>
+      </div>
 
-                  {[...history]
-                    // Order: newest first (by date); fallback: last row of CSV first (seed ids ascending)
-                    .sort((a, b) => {
-                      const ta = a?.started_at ? new Date(a.started_at).getTime() : 0;
-                      const tb = b?.started_at ? new Date(b.started_at).getTime() : 0;
-                      if (ta !== tb) return tb - ta;
-                      if (typeof a.id === "number" && typeof b.id === "number") return a.id - b.id;
-                      return 0;
-                    })
-                    .map((v) =>
-                      historyMode === "extended" ? (
-                        <HistoryCardExtended key={v.id} v={v} />
-                      ) : (
-                        <HistoryCardCompact key={v.id} v={v} />
-                      )
-                    )}
-                </div>
-              </Card>
+      {/* ── Filters + Sort ───────────────────────────────────────────── */}
+      {(() => {
+        // options
+        const pickerOptions = Array.from(
+          new Set(history.map((h) => h?.picked_by).filter(Boolean))
+        ).sort((a: string, b: string) => a.localeCompare(b));
+
+        const genreOptions = Array.from(
+          new Set(
+            history.flatMap((h) =>
+              ((h?.movie?.genres as Array<{ name: string }>) || []).map(
+                (g) => g?.name
+              )
+            )
+          )
+        )
+          .filter(Boolean)
+          .sort((a: string, b: string) => a.localeCompare(b));
+
+        return (
+          <div className="grid gap-3 md:grid-cols-4">
+            {/* Picker */}
+            <div className="flex flex-col">
+              <label className="text-xs text-gray-600">Picked by</label>
+              <select
+                className="rounded-xl border px-3 py-2"
+                value={filterPicker}
+                onChange={(e) => setFilterPicker(e.target.value)}
+              >
+                <option value="">All</option>
+                {pickerOptions.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
+
+            {/* Genre */}
+            <div className="flex flex-col">
+              <label className="text-xs text-gray-600">Genre</label>
+              <select
+                className="rounded-xl border px-3 py-2"
+                value={filterGenre}
+                onChange={(e) => setFilterGenre(e.target.value)}
+              >
+                <option value="">All</option>
+                {genreOptions.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Sort */}
+            <div className="flex flex-col">
+              <label className="text-xs text-gray-600">Sort by</label>
+              <select
+                className="rounded-xl border px-3 py-2"
+                value={sortKey}
+                onChange={(e) =>
+                  setSortKey(
+                    e.target.value as
+                      | "date-desc"
+                      | "date-asc"
+                      | "avg-desc"
+                      | "avg-asc"
+                      | "votes-desc"
+                      | "votes-asc"
+                  )
+                }
+              >
+                <option value="date-desc">Date ↓ (oldest)</option>
+                <option value="date-asc">Date ↑ (newest)</option>
+                <option value="avg-desc">Average ↓</option>
+                <option value="avg-asc">Average ↑</option>
+                <option value="votes-desc">Votes count ↓</option>
+                <option value="votes-asc">Votes count ↑</option>
+              </select>
+            </div>
+
+            {/* Reset */}
+            <div className="flex items-end">
+              <button
+                className="w-full rounded-xl border px-3 py-2"
+                onClick={() => {
+                  setFilterPicker("");
+                  setFilterGenre("");
+                  setSortKey("date-desc");
+                }}
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Results ─────────────────────────────────────────────────── */}
+      <div className="mt-4 grid gap-3">
+        {history.length === 0 && (
+          <div className="text-sm text-gray-600">
+            No entries yet. Start a vote from the “Vote” tab.
+          </div>
+        )}
+
+        {(() => {
+          // filter
+          let L = history.slice();
+          if (filterPicker) L = L.filter((h) => h?.picked_by === filterPicker);
+          if (filterGenre) {
+            L = L.filter((h) =>
+              ((h?.movie?.genres as Array<{ name: string }>) || []).some(
+                (g) => g?.name === filterGenre
+              )
+            );
+          }
+
+          // helpers
+          const getAvg = (r?: Record<string, number> | null) => {
+            if (!r) return null;
+            const vals = Object.values(r).map(Number);
+            if (!vals.length) return null;
+            return vals.reduce((a, b) => a + b, 0) / vals.length;
+          };
+
+          // sort
+          L.sort((a, b) => {
+            const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
+            const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
+            const aAvg = getAvg(a?.ratings);
+            const bAvg = getAvg(b?.ratings);
+            const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
+            const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
+
+            switch (sortKey) {
+              case "date-asc":
+                return aDate - bDate;
+              case "date-desc":
+                return bDate - aDate;
+              case "avg-asc":
+                return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
+              case "avg-desc":
+                return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
+              case "votes-asc":
+                return aVotes - bVotes;
+              case "votes-desc":
+                return bVotes - aVotes;
+              default:
+                return 0;
+            }
+          });
+
+          return L.map((v) =>
+            historyMode === "extended" ? (
+              <HistoryCardExtended key={v.id} v={v} />
+            ) : (
+              <HistoryCardCompact key={v.id} v={v} />
+            )
+          );
+        })()}
+      </div>
+    </Card>
+  </div>
+)}
+
 
           {tab === "profile" && (
             <div className="mt-2 grid gap-4">
