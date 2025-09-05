@@ -1,26 +1,24 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * Circo Cinema – Votazione in tempo reale (demo senza backend)
- * - "Avvia votazione" su un film crea una sessione attiva condivisa via localStorage
- * - Chi entra mentre è attiva vede il film e può premere "Vota"
- * - Dopo l'invio: stato "Attendi che tutti votino…" + lista voti aggiornata in tempo reale
- * - "Termina votazione" sposta il film nello Storico con i voti raccolti
+ * Circo Cinema — Voting with "Picked by", live stats, and nicer UI (no backend)
+ * - Start a vote → choose the movie + who picked it
+ * - While active: users press "Vote", submit once, then see "Wait for others..."
+ * - Realtime between tabs via localStorage storage events
+ * - End vote → archived with scores and picked_by
  */
 
 // ============================
-// 🔧 CONFIG
+// Config / storage keys
 // ============================
 const TMDB_API_KEY = "99cb7c79bbe966a91a2ffcb7a3ea3d37";
-
-// Storage keys
 const K_USER = "cn_user";
 const K_VIEWINGS = "cn_viewings";
-const K_ACTIVE_VOTE = "cn_active_vote";
-const K_ACTIVE_RATINGS = "cn_active_ratings";
+const K_ACTIVE_VOTE = "cn_active_vote";       // { id, movie, picked_by, started_at }
+const K_ACTIVE_RATINGS = "cn_active_ratings"; // { [user]: number }
 
 // ============================
-// 🧠 Utilities
+// Utilities
 // ============================
 async function tmdbSearch(query: string) {
   const q = (query || "").trim();
@@ -28,7 +26,7 @@ async function tmdbSearch(query: string) {
   try {
     const url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(
       q
-    )}&language=it-IT`;
+    )}&language=en-US`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json();
@@ -40,7 +38,7 @@ async function tmdbSearch(query: string) {
 
 async function tmdbDetails(tmdbId: number) {
   try {
-    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&language=it-IT`;
+    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
     const res = await fetch(url);
     if (!res.ok) return null;
     return await res.json();
@@ -62,7 +60,6 @@ function formatScore(n: number) {
 function roundToQuarter(n: number) {
   return Math.round(n / 0.25) * 0.25;
 }
-
 function lsGetJSON<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -78,11 +75,11 @@ function lsSetJSON(key: string, value: any) {
 }
 
 // ============================
-// 🎬 UI
+// UI primitives
 // ============================
-function Card({ children }: { children: React.ReactNode }) {
+function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className="rounded-2xl shadow p-4 bg-white border border-gray-200">
+    <div className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm ${className}`}>
       {children}
     </div>
   );
@@ -96,36 +93,32 @@ function Header({
 }: {
   user: string;
   onLogout: () => void;
-  tab: "vota" | "storico";
-  setTab: (t: "vota" | "storico") => void;
+  tab: "vote" | "history";
+  setTab: (t: "vote" | "history") => void;
 }) {
   return (
-    <div className="flex flex-col md:flex-row md:items-center md:justify-between py-4 gap-2">
+    <div className="flex flex-col gap-2 py-4 md:flex-row md:items-center md:justify-between">
       <h1 className="text-2xl font-bold">🎞️ Circo Cinema</h1>
       <div className="flex items-center gap-4">
         <nav className="flex gap-2">
           <button
-            onClick={() => setTab("vota")}
-            className={`px-3 py-2 rounded-xl border ${
-              tab === "vota" ? "bg-black text-white" : "bg-white"
-            }`}
+            onClick={() => setTab("vote")}
+            className={`rounded-xl border px-3 py-2 ${tab === "vote" ? "bg-black text-white" : "bg-white"}`}
           >
-            Vota
+            Vote
           </button>
           <button
-            onClick={() => setTab("storico")}
-            className={`px-3 py-2 rounded-xl border ${
-              tab === "storico" ? "bg-black text-white" : "bg-white"
-            }`}
+            onClick={() => setTab("history")}
+            className={`rounded-xl border px-3 py-2 ${tab === "history" ? "bg-black text-white" : "bg-white"}`}
           >
-            Storico
+            History
           </button>
         </nav>
         <span className="text-sm">
-          Ciao, <b>{user}</b>
+          Hi, <b>{user}</b>
         </span>
-        <button onClick={onLogout} className="px-3 py-1 rounded-xl border">
-          Esci
+        <button onClick={onLogout} className="rounded-xl border px-3 py-1">
+          Sign out
         </button>
       </div>
     </div>
@@ -135,25 +128,23 @@ function Header({
 function Login({ onLogin }: { onLogin: (name: string) => void }) {
   const [name, setName] = useState("");
   return (
-    <div className="max-w-md mx-auto mt-24">
+    <div className="mx-auto mt-24 max-w-md">
       <Card>
-        <h2 className="text-xl font-semibold mb-2">Entra con un nome</h2>
-        <p className="text-sm text-gray-600 mb-4">
-          Scegli un nickname. Rimarrà il tuo nome per le serate.
-        </p>
+        <h2 className="mb-2 text-xl font-semibold">Enter your name</h2>
+        <p className="mb-4 text-sm text-gray-600">Pick a nickname for movie nights.</p>
         <div className="flex gap-2">
           <input
-            className="flex-1 border rounded-xl px-3 py-2"
-            placeholder="Es. Tommy"
+            className="flex-1 rounded-xl border px-3 py-2"
+            placeholder="e.g. Tommy"
             value={name}
             onChange={(e) => setName(e.target.value.trimStart())}
           />
           <button
-            className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-30"
+            className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30"
             disabled={!name}
             onClick={() => onLogin(name)}
           >
-            Entra
+            Continue
           </button>
         </div>
       </Card>
@@ -161,6 +152,9 @@ function Login({ onLogin }: { onLogin: (name: string) => void }) {
   );
 }
 
+// ============================
+// Search + pickers
+// ============================
 function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
@@ -174,7 +168,7 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
       const res = await tmdbSearch(q);
       setResults(res.slice(0, 12));
     } catch (e: any) {
-      setErr(e?.message || "Errore di ricerca");
+      setErr(e?.message || "Search error");
     } finally {
       setLoading(false);
     }
@@ -184,10 +178,10 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
     <Card>
       <div className="flex items-end gap-2">
         <div className="flex-1">
-          <label className="text-sm">Cerca film</label>
+          <label className="text-sm">Search a movie</label>
           <input
-            className="w-full border rounded-xl px-3 py-2"
-            placeholder="Es. Matrix"
+            className="w-full rounded-xl border px-3 py-2"
+            placeholder="e.g. The Matrix"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && search()}
@@ -195,39 +189,35 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
         </div>
         <button
           onClick={search}
-          className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-30"
+          className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30"
           disabled={!q || loading}
         >
-          {loading ? "..." : "Cerca"}
+          {loading ? "..." : "Search"}
         </button>
       </div>
-      {err && <p className="text-red-600 text-sm mt-2">{err}</p>}
-      <div className="grid md:grid-cols-2 gap-3 mt-4">
+      {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
         {results.map((r) => (
           <div
             key={r.id}
-            className="flex gap-3 border rounded-xl p-2 hover:bg-gray-50 cursor-pointer"
+            className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50"
             onClick={() => onPick(r)}
           >
             {r.poster_path && (
               <img
                 src={posterUrl(r.poster_path, "w185")}
                 alt={r.title}
-                className="w-16 h-24 object-cover rounded-lg"
+                className="h-24 w-16 rounded-lg object-cover"
               />
             )}
             <div className="flex-1">
               <div className="font-semibold">
                 {r.title}{" "}
                 {r.release_date ? (
-                  <span className="text-gray-500">
-                    ({r.release_date?.slice(0, 4)})
-                  </span>
+                  <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span>
                 ) : null}
               </div>
-              <div className="text-sm text-gray-700 line-clamp-3">
-                {r.overview}
-              </div>
+              <div className="line-clamp-3 text-sm text-gray-700">{r.overview}</div>
             </div>
           </div>
         ))}
@@ -236,13 +226,7 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
   );
 }
 
-function RatingBar({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-}) {
+function RatingBar({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
     <div className="flex items-center gap-3">
       <input
@@ -251,9 +235,7 @@ function RatingBar({
         max={10}
         step={0.25}
         value={value}
-        onChange={(e) =>
-            onChange(parseFloat((e.target as HTMLInputElement).value))
-        }
+        onChange={(e) => onChange(parseFloat((e.target as HTMLInputElement).value))}
         className="w-full"
       />
       <div className="w-12 text-center font-semibold">{formatScore(value)}</div>
@@ -261,41 +243,60 @@ function RatingBar({
   );
 }
 
-function MovieCard({
+/** Card shown after choosing a movie: lets you pick "Picked by" from previous voters or add a new one */
+function StartVoteCard({
   movie,
+  knownUsers,
   onStartVoting,
 }: {
   movie: any;
-  onStartVoting: (m: any) => void;
+  knownUsers: string[];
+  onStartVoting: (movie: any, pickedBy: string) => void;
 }) {
+  const [pickedBy, setPickedBy] = useState("");
+  const valid = pickedBy.trim().length > 0;
+
   return (
     <Card>
       <div className="flex gap-4">
         {movie.poster_path && (
           <img
             src={posterUrl(movie.poster_path, "w342")}
-            className="w-32 h-48 object-cover rounded-xl"
+            className="h-48 w-32 rounded-xl object-cover"
             alt={movie.title}
           />
         )}
         <div className="flex-1">
           <h3 className="text-xl font-bold">
             {movie.title}{" "}
-            {movie.release_date ? (
-              <span className="text-gray-500">
-                ({movie.release_date.slice(0, 4)})
-              </span>
-            ) : null}
+            {movie.release_date ? <span className="text-gray-500">({movie.release_date.slice(0, 4)})</span> : null}
           </h3>
-          <p className="mt-1 text-gray-700 whitespace-pre-wrap">
-            {movie.overview}
-          </p>
-          <div className="flex gap-2 mt-3">
+          <p className="mt-1 whitespace-pre-wrap text-gray-700">{movie.overview}</p>
+
+          <div className="mt-4 grid gap-2">
+            <label className="text-sm font-medium">Picked by</label>
+            {/* Combo input with datalist of past voters */}
+            <input
+              list="known-users"
+              className="max-w-sm rounded-xl border px-3 py-2"
+              placeholder="Choose a name or type a new one"
+              value={pickedBy}
+              onChange={(e) => setPickedBy(e.target.value)}
+            />
+            <datalist id="known-users">
+              {knownUsers.map((u) => (
+                <option key={u} value={u} />
+              ))}
+            </datalist>
+          </div>
+
+          <div className="mt-3 flex gap-2">
             <button
-              className="px-4 py-2 rounded-xl bg-black text-white"
-              onClick={() => onStartVoting(movie)}
+              className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30"
+              disabled={!valid}
+              onClick={() => onStartVoting(movie, pickedBy.trim())}
             >
-              Avvia votazione
+              Start voting
             </button>
           </div>
         </div>
@@ -304,20 +305,19 @@ function MovieCard({
   );
 }
 
-/**
- * Stato di votazione:
- * - Prima del voto dell'utente: mostra SOLO il bottone "Vota"
- * - Durante il voto: slider + "Invia voto" / "Annulla"
- * - Dopo il voto: banner "Attendi che tutti votino…" e lista voti in tempo reale
- */
+// ============================
+// Active vote
+// ============================
 function ActiveVoting({
   movie,
+  pickedBy,
   currentUser,
   ratings,
   onSendVote,
   onEnd,
 }: {
   movie: any;
+  pickedBy?: string;
   currentUser: string;
   ratings: Record<string, number>;
   onSendVote: (score: number) => void;
@@ -329,7 +329,6 @@ function ActiveVoting({
   const [temp, setTemp] = useState<number>(you ?? 7);
 
   useEffect(() => {
-    // Se il valore cambia da realtime, aggiorna slider di default
     if (typeof you === "number") setTemp(you);
   }, [you]);
 
@@ -339,88 +338,67 @@ function ActiveVoting({
     setOpenVote(false);
   };
 
-  const allScores = Object.values(ratings).map(Number) as number[];
-  const avg =
-    allScores.length > 0
-      ? allScores.reduce((a, b) => a + b, 0) / allScores.length
-      : null;
+  const scores = Object.values(ratings).map(Number) as number[];
+  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
   return (
-    <Card>
+    <Card className="p-5">
       <div className="flex gap-4">
         {movie.poster_path && (
-          <img
-            src={posterUrl(movie.poster_path, "w342")}
-            className="w-32 h-48 object-cover rounded-xl"
-            alt={movie.title}
-          />
+          <img src={posterUrl(movie.poster_path, "w342")} className="h-48 w-32 rounded-xl object-cover" alt={movie.title} />
         )}
         <div className="flex-1">
-          <div className="flex items-baseline gap-2">
-            <h3 className="text-xl font-bold">Votazione in corso · {movie.title}</h3>
-            {avg !== null && (
-              <div className="ml-auto text-sm">
-                Media provvisoria: <b>{formatScore(avg)}</b> ({allScores.length} voti)
-              </div>
-            )}
+          <div className="flex items-start gap-2">
+            <div className="flex-1">
+              <div className="text-xl font-bold">Voting in progress · {movie.title}</div>
+              {pickedBy && <div className="text-sm text-gray-600">Picked by: <b>{pickedBy}</b></div>}
+            </div>
+            <div className="rounded-lg bg-gray-50 px-3 py-2 text-sm">
+              <div><b>Votes:</b> {scores.length}</div>
+              <div><b>Live avg:</b> {avg !== null ? formatScore(avg) : "—"}</div>
+            </div>
           </div>
 
-          <p className="mt-1 text-gray-700 line-clamp-3">{movie.overview}</p>
+          <p className="mt-2 line-clamp-3 text-gray-700">{movie.overview}</p>
 
-          {/* Stato utente */}
           {!hasVoted ? (
             <div className="mt-4">
               {!openVote ? (
-                <button
-                  className="px-4 py-2 rounded-xl bg-black text-white"
-                  onClick={() => setOpenVote(true)}
-                >
-                  Vota
+                <button className="rounded-xl bg-black px-4 py-2 text-white" onClick={() => setOpenVote(true)}>
+                  Vote
                 </button>
               ) : (
-                <div className="mt-2 border rounded-xl p-3">
-                  <div className="text-sm mb-2">Scegli il tuo voto</div>
-                  <RatingBar
-                    value={temp}
-                    onChange={(v) => setTemp(roundToQuarter(v))}
-                  />
+                <div className="mt-2 rounded-xl border p-3">
+                  <div className="mb-2 text-sm">Choose your score</div>
+                  <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
                   <div className="mt-2 flex gap-2">
-                    <button
-                      className="px-4 py-2 rounded-xl bg-black text-white"
-                      onClick={submit}
-                    >
-                      Invia voto
+                    <button className="rounded-xl bg-black px-4 py-2 text-white" onClick={submit}>
+                      Submit vote
                     </button>
                     <button
-                      className="px-3 py-2 rounded-xl border"
+                      className="rounded-xl border px-3 py-2"
                       onClick={() => {
                         setOpenVote(false);
                         setTemp(you ?? 7);
                       }}
                     >
-                      Annulla
+                      Cancel
                     </button>
                   </div>
                 </div>
               )}
             </div>
           ) : (
-            <div className="mt-4 text-sm p-3 rounded-xl bg-gray-50 border">
-              ✅ Voto registrato. <b>Attendi che tutti votino…</b>
+            <div className="mt-4 rounded-xl border bg-gray-50 p-3 text-sm">
+              ✅ Vote saved. <b>Please wait for others…</b>
             </div>
           )}
 
-          {/* Voti in tempo reale */}
           <div className="mt-4 text-sm">
-            <div className="font-medium mb-1">
-              Voti ricevuti: {Object.keys(ratings).length}
-            </div>
+            <div className="mb-1 font-medium">Live votes</div>
             <div className="flex flex-wrap gap-2 text-xs text-gray-700">
               {Object.entries(ratings).map(([n, s]) => (
-                <span
-                  key={n}
-                  className="px-2 py-1 rounded-lg border bg-white"
-                >
+                <span key={n} className="rounded-lg border bg-white px-2 py-1">
                   {n}: <b>{formatScore(Number(s))}</b>
                 </span>
               ))}
@@ -428,8 +406,8 @@ function ActiveVoting({
           </div>
 
           <div className="mt-4 flex gap-2">
-            <button className="px-4 py-2 rounded-xl border" onClick={onEnd}>
-              Termina votazione
+            <button className="rounded-xl border px-4 py-2" onClick={onEnd}>
+              End voting
             </button>
           </div>
         </div>
@@ -438,43 +416,35 @@ function ActiveVoting({
   );
 }
 
+// ============================
+// History
+// ============================
 function HistoryCard({ v }: { v: any }) {
   const ratings = (v.ratings || {}) as Record<string, number>;
-  const allScores = Object.values(ratings).map(Number) as number[];
-  const avg =
-    allScores.length > 0
-      ? allScores.reduce((a, b) => a + b, 0) / allScores.length
-      : null;
+  const scores = Object.values(ratings).map(Number) as number[];
+  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
   return (
     <Card>
       <div className="flex gap-4">
         {v.movie.poster_path && (
-          <img
-            src={posterUrl(v.movie.poster_path, "w185")}
-            className="w-16 h-24 object-cover rounded-lg"
-          />
+          <img src={posterUrl(v.movie.poster_path, "w185")} className="h-24 w-16 rounded-lg object-cover" />
         )}
         <div className="flex-1">
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-start gap-2">
             <div className="font-semibold">{v.movie.title}</div>
-            <div className="text-xs text-gray-500">
-              {new Date(v.started_at).toLocaleString()}
-            </div>
-            {avg !== null && (
-              <div className="ml-auto text-sm">
-                Media: <b>{formatScore(avg)}</b> ({allScores.length} voti)
-              </div>
-            )}
+            <div className="text-xs text-gray-500">{new Date(v.started_at).toLocaleString()}</div>
+            {v.picked_by && <div className="ml-auto text-xs text-gray-600">Picked by: <b>{v.picked_by}</b></div>}
           </div>
-          <div className="text-sm text-gray-700 line-clamp-2">
-            {v.movie.overview}
+          <div className="text-sm text-gray-700 line-clamp-2">{v.movie.overview}</div>
+          <div className="mt-2 flex items-center gap-3 text-xs text-gray-700">
+            <span>Votes: <b>{scores.length}</b></span>
+            <span>Avg: <b>{avg !== null ? formatScore(avg) : "—"}</b></span>
           </div>
           {Object.keys(ratings).length > 0 && (
-            <div className="mt-2 text-xs text-gray-600">
-              <span className="mr-2">Voti:</span>
+            <div className="mt-1 flex flex-wrap gap-2 text-xs text-gray-600">
               {Object.entries(ratings).map(([n, s]) => (
-                <span key={n} className="mr-2">
+                <span key={n} className="rounded-md border px-2 py-0.5">
                   {n}: <b>{formatScore(Number(s))}</b>
                 </span>
               ))}
@@ -487,34 +457,40 @@ function HistoryCard({ v }: { v: any }) {
 }
 
 // ============================
-// 🧩 APP
+// App
 // ============================
 export default function CinemaNightApp() {
   const [user, setUser] = useState<string>("");
-  const [tab, setTab] = useState<"vota" | "storico">("vota");
+  const [tab, setTab] = useState<"vote" | "history">("vote");
 
-  const [picked, setPicked] = useState<any | null>(null);
+  const [pickedMovie, setPickedMovie] = useState<any | null>(null);
   const [history, setHistory] = useState<any[]>([]);
-  const [activeVote, setActiveVote] = useState<any | null>(null); // { id, movie, started_at }
-  const [activeRatings, setActiveRatings] = useState<Record<string, number>>(
-    {}
-  );
+  const [activeVote, setActiveVote] = useState<any | null>(null); // { id, movie, picked_by, started_at }
+  const [activeRatings, setActiveRatings] = useState<Record<string, number>>({});
 
-  // Init
+  // Derived: known users from history (people who have voted before)
+  const knownUsers = useMemo(() => {
+    const set = new Set<string>();
+    for (const h of history) {
+      Object.keys(h?.ratings || {}).forEach((u) => set.add(u));
+      if (h?.picked_by) set.add(h.picked_by);
+    }
+    // include current user too
+    if (user) set.add(user);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [history, user]);
+
+  // Init + realtime sync
   useEffect(() => {
     setUser(lsGetJSON<string | null>(K_USER, "") || "");
     setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
     setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
     setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
 
-    // Sync tra TAB/finestre: realtime locale
     const onStorage = (e: StorageEvent) => {
-      if (e.key === K_ACTIVE_VOTE)
-        setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
-      if (e.key === K_ACTIVE_RATINGS)
-        setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
-      if (e.key === K_VIEWINGS)
-        setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
+      if (e.key === K_ACTIVE_VOTE) setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
+      if (e.key === K_ACTIVE_RATINGS) setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+      if (e.key === K_VIEWINGS) setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -530,26 +506,22 @@ export default function CinemaNightApp() {
     setUser("");
   };
 
-  // Ricerca
+  // Search pick
   const onPick = async (res: any) => {
     const details = await tmdbDetails(res.id);
-    setPicked(details || res);
+    setPickedMovie(details || res);
   };
 
-  // Avvio votazione
-  const startVoting = (movie: any) => {
-    const session = {
-      id: Date.now(),
-      movie,
-      started_at: new Date().toISOString(),
-    };
+  // Start voting (with pickedBy)
+  const startVoting = (movie: any, pickedBy: string) => {
+    const session = { id: Date.now(), movie, picked_by: pickedBy, started_at: new Date().toISOString() };
     lsSetJSON(K_ACTIVE_VOTE, session);
     lsSetJSON(K_ACTIVE_RATINGS, {});
     setActiveVote(session);
     setActiveRatings({});
   };
 
-  // Invio voto (dalla scheda ActiveVoting)
+  // Send vote
   const sendVote = (score: number) => {
     if (!user || !activeVote) return;
     const next = { ...activeRatings, [user]: roundToQuarter(score) };
@@ -557,12 +529,13 @@ export default function CinemaNightApp() {
     setActiveRatings(next);
   };
 
-  // Fine votazione → storico
+  // End voting → archive
   const endVoting = () => {
     if (!activeVote) return;
     const entry = {
       id: activeVote.id,
       started_at: activeVote.started_at,
+      picked_by: activeVote.picked_by,
       movie: activeVote.movie,
       ratings: activeRatings,
     };
@@ -577,18 +550,19 @@ export default function CinemaNightApp() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 p-4">
+    <div className="min-h-screen bg-gray-50 p-4 text-gray-900">
       {!user ? (
         <Login onLogin={login} />
       ) : (
-        <div className="max-w-4xl mx-auto">
+        <div className="mx-auto max-w-5xl">
           <Header user={user} onLogout={logout} tab={tab} setTab={setTab} />
 
-          {tab === "vota" && (
-            <div className="grid gap-4 mt-2">
+          {tab === "vote" && (
+            <div className="mt-2 grid gap-4">
               {activeVote ? (
                 <ActiveVoting
                   movie={activeVote.movie}
+                  pickedBy={activeVote.picked_by}
                   currentUser={user}
                   ratings={activeRatings}
                   onSendVote={sendVote}
@@ -597,23 +571,21 @@ export default function CinemaNightApp() {
               ) : (
                 <>
                   <SearchMovie onPick={onPick} />
-                  {picked && (
-                    <MovieCard movie={picked} onStartVoting={startVoting} />
+                  {pickedMovie && (
+                    <StartVoteCard movie={pickedMovie} knownUsers={knownUsers} onStartVoting={startVoting} />
                   )}
                 </>
               )}
             </div>
           )}
 
-          {tab === "storico" && (
+          {tab === "history" && (
             <div className="mt-2">
               <Card>
-                <h3 className="text-lg font-semibold mb-2">📜 Storia serate</h3>
+                <h3 className="mb-2 text-lg font-semibold">📜 Past nights</h3>
                 <div className="grid gap-3">
                   {history.length === 0 && (
-                    <div className="text-sm text-gray-600">
-                      Nessuna visione ancora. Avvia una votazione in “Vota”.
-                    </div>
+                    <div className="text-sm text-gray-600">No entries yet. Start a vote from the “Vote” tab.</div>
                   )}
                   {history.map((v) => (
                     <HistoryCard key={v.id} v={v} />
@@ -627,12 +599,3 @@ export default function CinemaNightApp() {
     </div>
   );
 }
-
-// 🧪 Mini smoke tests (se apri la console in dev)
-try {
-  console.assert(formatScore(7) === "7", "formatScore 7");
-  console.assert(formatScore(7.5) === "7.5", "formatScore 7.5");
-  console.assert(formatScore(7.25) === "7.25", "formatScore 7.25");
-  console.assert(roundToQuarter(7.12) === 7.0, "roundToQuarter 7.12");
-  console.assert(roundToQuarter(7.62) === 7.5, "roundToQuarter 7.62");
-} catch {}
