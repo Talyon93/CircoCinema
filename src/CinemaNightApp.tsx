@@ -28,47 +28,115 @@ const K_THEME = "cn_theme";                   // 'light' | 'dark'
 // Helpers
 // ============================
 
+/** Ritorna movie con `runtime` valorizzato (se lo trova su TMDB). */
+async function ensureRuntime(movie: any): Promise<any> {
+    try {
+      const rt = Number((movie as any)?.runtime);
+      if (!Number.isNaN(rt) && rt > 0) return movie;
+  
+      if (movie?.id) {
+        const det = await tmdbDetails(movie.id);
+        if (det?.runtime) {
+          return {
+            ...movie,
+            runtime: det.runtime,
+            genres: Array.isArray(movie?.genres) && movie.genres.length ? movie.genres : (det.genres || []),
+            poster_path: movie.poster_path ?? det.poster_path,
+            overview: movie.overview ?? det.overview,
+          };
+        }
+      }
+  
+      const title = movie?.title || "";
+      if (!title) return movie;
+  
+      const res = await tmdbSearch(title);
+      const first = res?.[0];
+      if (!first?.id) return movie;
+  
+      const det = await tmdbDetails(first.id);
+      if (det?.runtime) {
+        return {
+          ...movie,
+          id: movie.id ?? first.id,
+          runtime: det.runtime,
+          genres: Array.isArray(movie?.genres) && movie.genres.length ? movie.genres : (det.genres || []),
+          poster_path: movie.poster_path ?? det.poster_path ?? first.poster_path,
+          overview: movie.overview ?? det.overview ?? first.overview ?? "",
+        };
+      }
+      return movie;
+    } catch {
+      return movie;
+    }
+  }
+  
+  
+
 // piccola pausa per non bombardare TMDB (opzionale)
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 /** Completa poster/overview/genres per un film dato, usando TMDB. */
 async function enrichFromTmdbByTitleOrId(movie: any) {
-  try {
-    if (Array.isArray(movie?.genres) && movie.genres.length) return movie;
-
-    if (movie?.id) {
-      const det = await tmdbDetails(movie.id);
-      if (det) {
+    try {
+      // se ha già generi E runtime, non fare nulla
+      const hasGenres = Array.isArray(movie?.genres) && movie.genres.length > 0;
+      const rt = Number((movie as any)?.runtime);
+      const hasRuntime = !Number.isNaN(rt) && rt > 0;
+      if (hasGenres && hasRuntime) return movie;
+  
+      // prova con id diretto
+      if (movie?.id) {
+        const det = await tmdbDetails(movie.id);
+        if (det) {
+          return {
+            ...movie,
+            poster_path: movie.poster_path ?? det.poster_path,
+            overview: movie.overview ?? det.overview,
+            genres: Array.isArray(det.genres) ? det.genres : (movie.genres || []),
+            runtime: det.runtime ?? movie.runtime,
+          };
+        }
+      }
+  
+      // altrimenti cerca per titolo
+      const title = movie?.title || "";
+      if (!title) return movie;
+  
+      const search = await tmdbSearch(title);
+      const first = search?.[0];
+      if (!first?.id) {
+        // almeno riempi poster/overview se ci sono nel "first"
         return {
           ...movie,
-          poster_path: movie.poster_path ?? det.poster_path,
-          overview: movie.overview ?? det.overview,
-          genres: det.genres || [],
+          poster_path: movie.poster_path ?? first?.poster_path,
+          overview: movie.overview ?? first?.overview ?? movie.overview,
         };
       }
+  
+      const det = await tmdbDetails(first.id);
+      if (!det) {
+        return {
+          ...movie,
+          id: movie.id ?? first.id,
+          poster_path: movie.poster_path ?? first.poster_path,
+          overview: movie.overview ?? first.overview ?? "",
+        };
+      }
+  
+      return {
+        ...movie,
+        id: movie.id ?? first.id,
+        poster_path: movie.poster_path ?? det.poster_path ?? first.poster_path,
+        overview: movie.overview ?? det.overview ?? first.overview ?? "",
+        genres: Array.isArray(det.genres) ? det.genres : (movie.genres || []),
+        runtime: det.runtime ?? movie.runtime,
+      };
+    } catch {
+      return movie;
     }
-
-    const title = movie?.title || "";
-    if (!title) return movie;
-
-    const search = await tmdbSearch(title);
-    const first = search?.[0];
-    if (!first?.id) return movie;
-    const det = await tmdbDetails(first.id);
-    if (!det) return movie;
-
-    return {
-      ...movie,
-      id: movie.id ?? first.id,
-      poster_path: movie.poster_path ?? det.poster_path ?? first.poster_path,
-      overview: movie.overview ?? det.overview ?? "",
-      genres: det.genres || [],
-    };
-  } catch {
-    return movie;
   }
-}
-
+  
 function getAverage(r: Record<string, number> | undefined | null) {
   if (!r) return null;
   const vals = Object.values(r).map(Number);
@@ -141,23 +209,29 @@ async function tmdbDetails(tmdbId: number) {
 
 // Assicura che il movie abbia almeno genres (e, già che ci siamo, completiamo poster/overview se mancano)
 async function ensureGenres(movie: any): Promise<any> {
-  try {
-    if (Array.isArray(movie?.genres) && movie.genres.length) return movie;
-
-    if (movie?.id) {
-      const det = await tmdbDetails(movie.id);
-      if (det) {
-        return {
-          ...movie,
-          poster_path: movie.poster_path ?? det.poster_path,
-          overview: movie.overview ?? det.overview,
-          genres: det.genres || [],
-        };
+    try {
+      const hasGenres = Array.isArray(movie?.genres) && movie.genres.length > 0;
+      if (hasGenres && Number(movie?.runtime) > 0) return movie;
+  
+      if (movie?.id) {
+        const det = await tmdbDetails(movie.id);
+        if (det) {
+          return {
+            ...movie,
+            poster_path: movie.poster_path ?? det.poster_path,
+            overview: movie.overview ?? det.overview,
+            genres: Array.isArray(det.genres) ? det.genres : (movie.genres || []),
+            runtime: det.runtime ?? movie.runtime,
+          };
+        }
       }
+      // fallback: se non ha id, prova via enrich generale (che cerca per titolo)
+      return await enrichFromTmdbByTitleOrId(movie);
+    } catch {
+      return movie;
     }
-  } catch {}
-  return movie;
-}
+  }
+  
 
 // TMDB metadata cache for History seed entries
 type MetaCache = Record<string, { poster_path?: string; overview?: string }>;
@@ -245,12 +319,12 @@ function Header({
   }: {
     user: string;
     onLogout: () => void;
-    tab: "vote" | "history" | "profile";
-    setTab: (t: "vote" | "history" | "profile") => void;
+    tab: "vote" | "history" | "profile" | "stats";
+    setTab: (t: "vote" | "history" | "profile" | "stats") => void;
     theme: "light" | "dark";
     setTheme: (t: "light" | "dark") => void;
   }) {
-    const tabBtn = (key: "vote" | "history" | "profile", label: string) => (
+    const tabBtn = (key: "vote" | "history" | "profile" | "stats", label: string) => (
       <button
         onClick={() => setTab(key)}
         className={`rounded-xl border px-3 py-2 
@@ -266,19 +340,17 @@ function Header({
         <h1 className="text-2xl font-bold">🎞️ Circo Cinema</h1>
   
         <div className="flex items-center gap-3">
-          {/* NAV: solo i tab */}
           <nav className="flex items-center gap-2">
             {tabBtn("vote", "Vote")}
             {tabBtn("history", "History")}
             {tabBtn("profile", "Profile")}
+            {tabBtn("stats", "Stats")}
           </nav>
   
-          {/* Info utente */}
           <span className="text-sm text-gray-700 dark:text-zinc-300">
             Hi, <b>{user}</b>
           </span>
   
-          {/* Logout */}
           <button
             onClick={onLogout}
             className="rounded-xl border px-3 py-1 border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-900"
@@ -286,7 +358,6 @@ function Header({
             Sign out
           </button>
   
-          {/* Toggle tema → alla destra di Sign out */}
           <button
             aria-label="Toggle dark mode"
             className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
@@ -299,6 +370,7 @@ function Header({
       </div>
     );
   }
+  
   
 
 function Login({ onLogin }: { onLogin: (name: string) => void }) {
@@ -1064,6 +1136,328 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
   );
 }
 
+function Stats({
+    history,
+    backfillRuntime,   // optional: () => void
+    isLoading = false, // optional
+  }: {
+    history: any[];
+    backfillRuntime?: () => void;
+    isLoading?: boolean;
+  }) {
+    // Automatic backfill start if provided
+    React.useEffect(() => {
+      if (!backfillRuntime) return;
+      const hasRt = history.some((h) => Number((h?.movie as any)?.runtime) > 0);
+      if (!hasRt && !isLoading && history.length > 0) {
+        backfillRuntime();
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [history, isLoading, backfillRuntime]);
+  
+    // Helper: average of a ratings record
+    const avgOf = (r?: Record<string, number> | null) => {
+      if (!r) return null;
+      const vals = Object.values(r).map(Number);
+      if (!vals.length) return null;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    };
+  
+    // ---- Aggregations
+    const givenMap = new Map<string, { sum: number; n: number }>();     // votes given
+    const receivedMap = new Map<string, { sum: number; n: number }>();  // average received as picker
+    const genreCount = new Map<string, number>();                       // genre counts
+    let totalMinutes = 0;
+    let totalMinutesKnown = 0;
+    const movieStats: Array<{ id: any; title: string; avg: number; votes: number; date: number }> = [];
+  
+    for (const v of history) {
+      const ratings = (v?.ratings || {}) as Record<string, number>;
+      const entries = Object.entries(ratings);
+  
+      // votes given per user
+      for (const [user, score] of entries) {
+        const m = givenMap.get(user) || { sum: 0, n: 0 };
+        m.sum += Number(score);
+        m.n += 1;
+        givenMap.set(user, m);
+      }
+  
+      // average received by the picker
+      const avg = avgOf(ratings);
+      if (avg != null && v?.picked_by) {
+        const r = receivedMap.get(v.picked_by) || { sum: 0, n: 0 };
+        r.sum += avg;
+        r.n += 1;
+        receivedMap.set(v.picked_by, r);
+      }
+  
+      // genres
+      const arr = (v?.movie?.genres || []) as Array<{ name: string }>;
+      arr.forEach((g) => {
+        const name = g?.name?.trim();
+        if (name) genreCount.set(name, (genreCount.get(name) || 0) + 1);
+      });
+  
+      // runtime
+      const rt = Number((v?.movie as any)?.runtime);
+      if (!Number.isNaN(rt) && rt > 0) {
+        totalMinutes += rt;
+        totalMinutesKnown += 1;
+      }
+  
+      // for top/flop
+      if (avg != null) {
+        movieStats.push({
+          id: v.id,
+          title: v?.movie?.title || "Untitled",
+          avg,
+          votes: entries.length,
+          date: v?.started_at ? new Date(v.started_at).getTime() : 0,
+        });
+      }
+    }
+  
+    // ---- Derived, sorted
+    const givenArr = Array.from(givenMap, ([user, { sum, n }]) => ({
+      user, avg: sum / Math.max(1, n), count: n,
+    })).sort((a, b) => b.count - a.count || a.user.localeCompare(b.user));
+  
+    const receivedArr = Array.from(receivedMap, ([user, { sum, n }]) => ({
+      user, avg: sum / Math.max(1, n), count: n,
+    })).sort((a, b) => b.avg - a.avg || b.count - a.count);
+  
+    const genresArr = Array.from(genreCount, ([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  
+    const bestMovies = movieStats.slice().sort((a, b) => b.avg - a.avg || b.votes - a.votes).slice(0, 5);
+    const worstMovies = movieStats.slice().sort((a, b) => a.avg - b.avg || b.votes - a.votes).slice(0, 5);
+  
+    const harshest = givenArr.slice().sort((a, b) => a.avg - b.avg).slice(0, 3);
+    const kindest  = givenArr.slice().sort((a, b) => b.avg - a.avg).slice(0, 3);
+  
+    // Minutes label (with loading state)
+    const minutesLabel =
+      totalMinutesKnown > 0
+        ? `${totalMinutes} min (across ${totalMinutesKnown} movies with known runtime)`
+        : isLoading
+          ? "Fetching runtimes…"
+          : "—";
+  
+    const LoadingRow = () => (
+      <div className="rounded-xl border px-3 py-2 text-sm text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+        <span className="animate-pulse">Loading…</span>
+      </div>
+    );
+  
+    return (
+      <div className="grid gap-4">
+        {/* KPI row */}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Card>
+            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Total movies</div>
+            <div className="text-2xl font-bold">{history.length}</div>
+          </Card>
+  
+          <Card>
+            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Minutes watched</div>
+            <div className="flex items-center">
+              <div className="text-2xl font-bold">{minutesLabel}</div>
+              {isLoading && <span className="ml-2 animate-pulse text-lg">⏳</span>}
+            </div>
+            {(!isLoading && totalMinutesKnown === 0) && (
+              <p className="mt-1 text-xs text-gray-500 dark:text-zinc-400">
+                No runtime available yet
+                {backfillRuntime ? " — will be fetched automatically." : "."}
+              </p>
+            )}
+          </Card>
+  
+          <Card>
+            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Distinct genres</div>
+            <div className="text-2xl font-bold">{genresArr.length}</div>
+          </Card>
+  
+          <Card>
+            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Total votes</div>
+            <div className="text-2xl font-bold">
+              {history.reduce((acc, v) => acc + Object.keys(v?.ratings || {}).length, 0)}
+            </div>
+          </Card>
+        </div>
+  
+        {/* Most watched genres */}
+        <Card>
+          <h3 className="mb-3 text-lg font-semibold">🎭 Most watched genres</h3>
+          {isLoading && genresArr.length === 0 ? (
+            <LoadingRow />
+          ) : genresArr.length === 0 ? (
+            <div className="text-sm text-gray-600 dark:text-zinc-400">
+              No genre data (make sure movies have TMDB genres).
+            </div>
+          ) : (
+            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {genresArr.slice(0, 12).map((g) => (
+                <li
+                  key={g.name}
+                  className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  <span>{g.name}</span>
+                  <span className="rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700">{g.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+  
+        {/* Users: most votes / harshest / kindest */}
+        <div className="grid gap-3 lg:grid-cols-3">
+          <Card>
+            <h3 className="mb-3 text-lg font-semibold">🗳️ Most votes given</h3>
+            {isLoading && givenArr.length === 0 ? (
+              <LoadingRow />
+            ) : givenArr.length === 0 ? (
+              <div className="text-sm text-gray-600 dark:text-zinc-400">No votes yet.</div>
+            ) : (
+              <ul className="grid gap-2">
+                {givenArr.slice(0, 8).map((u) => (
+                  <li
+                    key={u.user}
+                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  >
+                    <span className="truncate">{u.user}</span>
+                    <span className="text-xs">
+                      <b>{u.count}</b> votes · avg <b>{formatScore(u.avg)}</b>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+  
+          <Card>
+            <h3 className="mb-3 text-lg font-semibold">🥶 Harshest (lowest avg)</h3>
+            {isLoading && harshest.length === 0 ? (
+              <LoadingRow />
+            ) : harshest.length === 0 ? (
+              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
+            ) : (
+              <ul className="grid gap-2">
+                {harshest.map((u) => (
+                  <li
+                    key={u.user}
+                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  >
+                    <span className="truncate">{u.user}</span>
+                    <span className="text-xs">avg <b>{formatScore(u.avg)}</b> · {u.count} votes</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+  
+          <Card>
+            <h3 className="mb-3 text-lg font-semibold">💖 Kindest (highest avg)</h3>
+            {isLoading && kindest.length === 0 ? (
+              <LoadingRow />
+            ) : kindest.length === 0 ? (
+              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
+            ) : (
+              <ul className="grid gap-2">
+                {kindest.map((u) => (
+                  <li
+                    key={u.user}
+                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  >
+                    <span className="truncate">{u.user}</span>
+                    <span className="text-xs">avg <b>{formatScore(u.avg)}</b> · {u.count} votes</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </div>
+  
+        {/* Picker: average received on movies they picked */}
+        <Card>
+          <h3 className="mb-3 text-lg font-semibold">🎬 Avg score received by pickers</h3>
+          {isLoading && receivedArr.length === 0 ? (
+            <LoadingRow />
+          ) : receivedArr.length === 0 ? (
+            <div className="text-sm text-gray-600 dark:text-zinc-400">No movies with votes yet.</div>
+          ) : (
+            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {receivedArr.map((p) => (
+                <li
+                  key={p.user}
+                  className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  <span className="truncate">{p.user}</span>
+                  <span className="text-xs">
+                    avg <b>{formatScore(p.avg)}</b> · {p.count} movies
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+  
+        {/* Best / Worst movies */}
+        <div className="grid gap-3 lg:grid-cols-2">
+          <Card>
+            <h3 className="mb-3 text-lg font-semibold">🏆 Top 5 movies</h3>
+            {isLoading && bestMovies.length === 0 ? (
+              <LoadingRow />
+            ) : bestMovies.length === 0 ? (
+              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
+            ) : (
+              <ol className="grid gap-2">
+                {bestMovies.map((m, i) => (
+                  <li
+                    key={m.id}
+                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  >
+                    <span className="truncate">{i + 1}. {m.title}</span>
+                    <span className="text-xs">avg <b>{formatScore(m.avg)}</b> · {m.votes} votes</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </Card>
+  
+          <Card>
+            <h3 className="mb-3 text-lg font-semibold">💔 Flop 5 movies</h3>
+            {isLoading && worstMovies.length === 0 ? (
+              <LoadingRow />
+            ) : worstMovies.length === 0 ? (
+              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
+            ) : (
+              <ol className="grid gap-2">
+                {worstMovies.map((m, i) => (
+                  <li
+                    key={m.id}
+                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  >
+                    <span className="truncate">{i + 1}. {m.title}</span>
+                    <span className="text-xs">avg <b>{formatScore(m.avg)}</b> · {m.votes} votes</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </Card>
+        </div>
+  
+        {/* Runtime note */}
+        <p className="text-xs text-gray-500 dark:text-zinc-400">
+          * Total minutes only consider movies with <code>runtime</code> known from TMDB.
+        </p>
+      </div>
+    );
+  }
+  
+  
+  
+
 // ============================
 // App
 // ============================
@@ -1071,9 +1465,10 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
 export default function CinemaNightApp() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme());
   useEffect(() => applyTheme(theme), [theme]);
+  const [isBackfillingRuntime, setIsBackfillingRuntime] = useState(false);
 
   const [user, setUser] = useState<string>("");
-  const [tab, setTab] = useState<"vote" | "history" | "profile">("vote");
+  const [tab, setTab] = useState<"vote" | "history" | "profile" | "stats">("vote");
 
   const [pickedMovie, setPickedMovie] = useState<any | null>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -1113,6 +1508,35 @@ export default function CinemaNightApp() {
       }
     } finally {
       setIsBackfilling(false);
+    }
+  };
+
+  const backfillHistoryRuntime = async () => {
+    if (isBackfillingRuntime) return;
+    setIsBackfillingRuntime(true);
+    try {
+      const list = lsGetJSON<any[]>(K_VIEWINGS, []);
+      let changed = false;
+  
+      for (let i = 0; i < list.length; i++) {
+        const v = list[i];
+        const rt = Number((v?.movie as any)?.runtime);
+        if (!Number.isNaN(rt) && rt > 0) continue;
+  
+        const withRt = await ensureRuntime(v.movie);
+        if (withRt !== v.movie) {
+          list[i] = { ...v, movie: withRt };
+          changed = true;
+        }
+        await sleep(200); // gentile con TMDB
+      }
+  
+      if (changed) {
+        lsSetJSON(K_VIEWINGS, list);
+        setHistory(list);
+      }
+    } finally {
+      setIsBackfillingRuntime(false);
     }
   };
 
@@ -1186,8 +1610,9 @@ export default function CinemaNightApp() {
   useEffect(() => {
     (async () => {
       // 🔄 resetta SEMPRE la history salvata
-      localStorage.removeItem(K_VIEWINGS);
-
+      const DEV_RESET = false;
+      if (DEV_RESET) localStorage.removeItem(K_VIEWINGS);
+      
       // user
       setUser(lsGetJSON<string | null>(K_USER, "") || "");
 
@@ -1250,6 +1675,31 @@ export default function CinemaNightApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history.length]);
 
+
+    // Avvia il backfill dei runtime quando mancano (senza attendere la tab Stats)
+    useEffect(() => {
+        if (history.length === 0) return;
+        if (isBackfillingRuntime) return; // evita doppi trigger mentre sta lavorando
+    
+        // c'è almeno un runtime valido?
+        const hasAnyRuntime = history.some(h => {
+        const rt = Number((h?.movie as any)?.runtime);
+        return !Number.isNaN(rt) && rt > 0;
+        });
+    
+        // ci sono runtime mancanti o non validi?
+        const hasMissingRuntime = history.some(h => {
+        const rt = Number((h?.movie as any)?.runtime);
+        return Number.isNaN(rt) || rt <= 0;
+        });
+    
+        // se non abbiamo ancora nessun runtime ma ce ne sono di mancanti, avvia il backfill
+        if (!hasAnyRuntime && hasMissingRuntime) {
+        backfillHistoryRuntime();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [history.length, isBackfillingRuntime]);
+    
   // Auth
   const login = (name: string) => {
     localStorage.setItem(K_USER, name);
@@ -1338,6 +1788,19 @@ export default function CinemaNightApp() {
               )}
             </div>
           )}
+
+            {tab === "stats" && (
+            <div className="mt-2 grid gap-4">
+                <Card>
+                <h3 className="mb-3 text-lg font-semibold">📊 Stats</h3>
+                <Stats
+                    history={history}
+                    backfillRuntime={backfillHistoryRuntime}
+                    isLoading={isBackfillingRuntime}
+                />
+                </Card>
+            </div>
+            )}
 
           {tab === "history" && (
             <div className="mt-2">
