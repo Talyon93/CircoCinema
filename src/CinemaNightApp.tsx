@@ -1,58 +1,35 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * Circo Cinema — Voting with "Picked by", live stats, and nicer UI (no backend)
- * - Start a vote → choose the movie + who picked it
- * - While active: users press "Vote", submit once, then see "Wait for others..."
- * - Realtime between tabs via localStorage storage events
- * - End vote → archived with scores and picked_by
+ * Circo Cinema – complete app
+ * - Vote flow with "Picked by", live stats, edit vote
+ * - History: Extended + Compact (aligned like spreadsheet row)
+ * - Profile: avatar + list of movies you picked
+ * - localStorage sync across tabs
+ * - Lazy TMDB metadata (poster/overview) caching
+ * - Optional seeding if history is empty (tries ./seed or /circo_seed.json)
  */
 
 // ============================
-// Config / storage keys
+// Config / keys
 // ============================
 const TMDB_API_KEY = "99cb7c79bbe966a91a2ffcb7a3ea3d37";
+
 const K_USER = "cn_user";
 const K_VIEWINGS = "cn_viewings";
 const K_ACTIVE_VOTE = "cn_active_vote";       // { id, movie, picked_by, started_at }
 const K_ACTIVE_RATINGS = "cn_active_ratings"; // { [user]: number }
+const K_PROFILE_PREFIX = "cn_profile_";       // `${K_PROFILE_PREFIX}${username}` -> { avatar?: string }
+const K_TMDB_CACHE = "cn_tmdb_cache";         // cache poster/overview per titolo
 
 // ============================
-// Utilities
+// Helpers
 // ============================
-async function tmdbSearch(query: string) {
-  const q = (query || "").trim();
-  if (!q) return [] as any[];
-  try {
-    const url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(
-      q
-    )}&language=en-US`;
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data?.results || []) as any[];
-  } catch {
-    return [];
-  }
-}
-
-async function tmdbDetails(tmdbId: number) {
-  try {
-    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
 function posterUrl(p?: string, size: "w185" | "w342" = "w185") {
   if (!p) return "";
   if (p.startsWith("http")) return p;
   return `https://image.tmdb.org/t/p/${size}${p}`;
 }
-
 function formatScore(n: number) {
   const s = (Math.round(n * 100) / 100).toFixed(2);
   return s.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
@@ -73,16 +50,82 @@ function lsSetJSON(key: string, value: any) {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {}
 }
+function loadAvatarFor(name: string): string | null {
+  try {
+    const raw = localStorage.getItem(`${K_PROFILE_PREFIX}${name}`);
+    if (!raw) return null;
+    const obj = JSON.parse(raw || "{}");
+    return obj?.avatar || null;
+  } catch {
+    return null;
+  }
+}
+
+// TMDB search/details
+async function tmdbSearch(query: string) {
+  const q = (query || "").trim();
+  if (!q) return [] as any[];
+  try {
+    const url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(
+      q
+    )}&language=en-US`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data?.results || []) as any[];
+  } catch {
+    return [];
+  }
+}
+async function tmdbDetails(tmdbId: number) {
+  try {
+    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+// TMDB metadata cache for History seed entries
+type MetaCache = Record<string, { poster_path?: string; overview?: string }>;
+function getMetaCache(): MetaCache {
+  return lsGetJSON<MetaCache>(K_TMDB_CACHE, {});
+}
+function setMetaCache(cache: MetaCache) {
+  lsSetJSON(K_TMDB_CACHE, cache);
+}
+async function fetchMetaForTitle(title: string): Promise<{ poster_path?: string; overview?: string } | null> {
+  const q = (title || "").trim();
+  if (!q) return null;
+
+  try {
+    // 1) search
+    const searchUrl = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q)}&language=en-US`;
+    const sres = await fetch(searchUrl);
+    if (!sres.ok) return null;
+    const sdata = await sres.json();
+    const first = (sdata?.results || [])[0];
+    if (!first?.id) return null;
+
+    // 2) details
+    const detUrl = `https://api.themoviedb.org/3/movie/${first.id}?api_key=${TMDB_API_KEY}&language=en-US`;
+    const dres = await fetch(detUrl);
+    if (!dres.ok) return null;
+    const det = await dres.json();
+
+    return { poster_path: det?.poster_path || first?.poster_path, overview: det?.overview || "" };
+  } catch {
+    return null;
+  }
+}
 
 // ============================
 // UI primitives
 // ============================
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm ${className}`}>
-      {children}
-    </div>
-  );
+  return <div className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm ${className}`}>{children}</div>;
 }
 
 function Header({
@@ -93,8 +136,8 @@ function Header({
 }: {
   user: string;
   onLogout: () => void;
-  tab: "vote" | "history";
-  setTab: (t: "vote" | "history") => void;
+  tab: "vote" | "history" | "profile";
+  setTab: (t: "vote" | "history" | "profile") => void;
 }) {
   return (
     <div className="flex flex-col gap-2 py-4 md:flex-row md:items-center md:justify-between">
@@ -112,6 +155,12 @@ function Header({
             className={`rounded-xl border px-3 py-2 ${tab === "history" ? "bg-black text-white" : "bg-white"}`}
           >
             History
+          </button>
+          <button
+            onClick={() => setTab("profile")}
+            className={`rounded-xl border px-3 py-2 ${tab === "profile" ? "bg-black text-white" : "bg-white"}`}
+          >
+            Profile
           </button>
         </nav>
         <span className="text-sm">
@@ -131,11 +180,11 @@ function Login({ onLogin }: { onLogin: (name: string) => void }) {
     <div className="mx-auto mt-24 max-w-md">
       <Card>
         <h2 className="mb-2 text-xl font-semibold">Enter your name</h2>
-        <p className="mb-4 text-sm text-gray-600">Pick a nickname for movie nights.</p>
+        <p className="mb-4 text-sm text-gray-600">If you used this name before, your profile image and picks will be restored.</p>
         <div className="flex gap-2">
           <input
             className="flex-1 rounded-xl border px-3 py-2"
-            placeholder="e.g. Tommy"
+            placeholder="e.g. Talyon"
             value={name}
             onChange={(e) => setName(e.target.value.trimStart())}
           />
@@ -187,11 +236,7 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
             onKeyDown={(e) => e.key === "Enter" && search()}
           />
         </div>
-        <button
-          onClick={search}
-          className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30"
-          disabled={!q || loading}
-        >
+        <button onClick={search} className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30" disabled={!q || loading}>
           {loading ? "..." : "Search"}
         </button>
       </div>
@@ -203,19 +248,10 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
             className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50"
             onClick={() => onPick(r)}
           >
-            {r.poster_path && (
-              <img
-                src={posterUrl(r.poster_path, "w185")}
-                alt={r.title}
-                className="h-24 w-16 rounded-lg object-cover"
-              />
-            )}
+            {r.poster_path && <img src={posterUrl(r.poster_path, "w185")} alt={r.title} className="h-24 w-16 rounded-lg object-cover" />}
             <div className="flex-1">
               <div className="font-semibold">
-                {r.title}{" "}
-                {r.release_date ? (
-                  <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span>
-                ) : null}
+                {r.title} {r.release_date ? <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span> : null}
               </div>
               <div className="line-clamp-3 text-sm text-gray-700">{r.overview}</div>
             </div>
@@ -243,7 +279,7 @@ function RatingBar({ value, onChange }: { value: number; onChange: (v: number) =
   );
 }
 
-/** Card shown after choosing a movie: lets you pick "Picked by" from previous voters or add a new one */
+/** StartVoteCard: choose movie and "Picked by" */
 function StartVoteCard({
   movie,
   knownUsers,
@@ -259,23 +295,15 @@ function StartVoteCard({
   return (
     <Card>
       <div className="flex gap-4">
-        {movie.poster_path && (
-          <img
-            src={posterUrl(movie.poster_path, "w342")}
-            className="h-48 w-32 rounded-xl object-cover"
-            alt={movie.title}
-          />
-        )}
+        {movie.poster_path && <img src={posterUrl(movie.poster_path, "w342")} className="h-48 w-32 rounded-xl object-cover" alt={movie.title} />}
         <div className="flex-1">
           <h3 className="text-xl font-bold">
-            {movie.title}{" "}
-            {movie.release_date ? <span className="text-gray-500">({movie.release_date.slice(0, 4)})</span> : null}
+            {movie.title} {movie.release_date ? <span className="text-gray-500">({movie.release_date.slice(0, 4)})</span> : null}
           </h3>
           <p className="mt-1 whitespace-pre-wrap text-gray-700">{movie.overview}</p>
 
           <div className="mt-4 grid gap-2">
             <label className="text-sm font-medium">Picked by</label>
-            {/* Combo input with datalist of past voters */}
             <input
               list="known-users"
               className="max-w-sm rounded-xl border px-3 py-2"
@@ -290,12 +318,8 @@ function StartVoteCard({
             </datalist>
           </div>
 
-          <div className="mt-3 flex gap-2">
-            <button
-              className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30"
-              disabled={!valid}
-              onClick={() => onStartVoting(movie, pickedBy.trim())}
-            >
+          <div className="mt-3">
+            <button className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30" disabled={!valid} onClick={() => onStartVoting(movie, pickedBy.trim())}>
               Start voting
             </button>
           </div>
@@ -306,8 +330,20 @@ function StartVoteCard({
 }
 
 // ============================
-// Active vote
+// Voting (with Edit vote)
 // ============================
+function Avatar({ name }: { name: string }) {
+  const initials = name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase())
+    .join("");
+  const avatar = loadAvatarFor(name);
+  if (avatar) return <img src={avatar} className="h-8 w-8 rounded-full object-cover" alt={name} />;
+  return <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold">{initials || "?"}</div>;
+}
+
 function ActiveVoting({
   movie,
   pickedBy,
@@ -325,7 +361,9 @@ function ActiveVoting({
 }) {
   const you = ratings[currentUser];
   const hasVoted = typeof you === "number";
+
   const [openVote, setOpenVote] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [temp, setTemp] = useState<number>(you ?? 7);
 
   useEffect(() => {
@@ -336,30 +374,51 @@ function ActiveVoting({
     const fixed = roundToQuarter(temp);
     onSendVote(fixed);
     setOpenVote(false);
+    setEditMode(false);
   };
 
-  const scores = Object.values(ratings).map(Number) as number[];
+  const entries = Object.entries(ratings) as [string, number][];
+  const sorted = entries.sort((a, b) => {
+    if (a[0] === currentUser) return -1;
+    if (b[0] === currentUser) return 1;
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return a[0].localeCompare(b[0]);
+  });
+
+  const scores = entries.map(([, n]) => Number(n));
   const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
   return (
     <Card className="p-5">
-      <div className="flex gap-4">
-        {movie.poster_path && (
-          <img src={posterUrl(movie.poster_path, "w342")} className="h-48 w-32 rounded-xl object-cover" alt={movie.title} />
-        )}
+      <div className="flex flex-col gap-5 md:flex-row">
+        {movie.poster_path && <img src={posterUrl(movie.poster_path, "w342")} className="h-48 w-32 flex-shrink-0 rounded-xl object-cover" alt={movie.title} />}
+
         <div className="flex-1">
-          <div className="flex items-start gap-2">
+          <div className="flex items-start gap-4">
             <div className="flex-1">
               <div className="text-xl font-bold">Voting in progress · {movie.title}</div>
-              {pickedBy && <div className="text-sm text-gray-600">Picked by: <b>{pickedBy}</b></div>}
-            </div>
-            <div className="rounded-lg bg-gray-50 px-3 py-2 text-sm">
-              <div><b>Votes:</b> {scores.length}</div>
-              <div><b>Live avg:</b> {avg !== null ? formatScore(avg) : "—"}</div>
+              {pickedBy && (
+                <div className="text-sm">
+                  <span className="rounded-full bg-black px-2 py-1 text-white">
+                    Picked by: <b>{pickedBy}</b>
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
-          <p className="mt-2 line-clamp-3 text-gray-700">{movie.overview}</p>
+          <p className="mt-2 text-gray-700">{movie.overview}</p>
+
+          <div className="mt-3 flex w-full items-stretch gap-3">
+            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3">
+              <div className="text-xs uppercase text-gray-500">Votes</div>
+              <div className="text-2xl font-bold leading-6">{scores.length}</div>
+            </div>
+            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3">
+              <div className="text-xs uppercase text-gray-500">Live avg</div>
+              <div className="text-2xl font-bold leading-6">{avg !== null ? formatScore(avg) : "—"}</div>
+            </div>
+          </div>
 
           {!hasVoted ? (
             <div className="mt-4">
@@ -368,7 +427,7 @@ function ActiveVoting({
                   Vote
                 </button>
               ) : (
-                <div className="mt-2 rounded-xl border p-3">
+                <div className="mt-2 rounded-2xl border p-3">
                   <div className="mb-2 text-sm">Choose your score</div>
                   <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
                   <div className="mt-2 flex gap-2">
@@ -389,23 +448,75 @@ function ActiveVoting({
               )}
             </div>
           ) : (
-            <div className="mt-4 rounded-xl border bg-gray-50 p-3 text-sm">
-              ✅ Vote saved. <b>Please wait for others…</b>
-            </div>
+            <>
+              {!editMode ? (
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 rounded-2xl border bg-gray-50 p-3 text-sm">
+                    <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
+                    <span>
+                      <b>Vote saved.</b> Please wait for others…
+                    </span>
+                  </div>
+                  <button
+                    className="rounded-xl border px-3 py-2"
+                    onClick={() => {
+                      setTemp(you ?? 7);
+                      setEditMode(true);
+                    }}
+                  >
+                    Edit vote
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border p-3">
+                  <div className="mb-2 text-sm">
+                    Edit your vote <span className="text-gray-500">(current: {formatScore(you)})</span>
+                  </div>
+                  <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
+                  <div className="mt-2 flex gap-2">
+                    <button className="rounded-xl bg-black px-4 py-2 text-white" onClick={submit}>
+                      Save
+                    </button>
+                    <button
+                      className="rounded-xl border px-3 py-2"
+                      onClick={() => {
+                        setEditMode(false);
+                        setTemp(you ?? 7);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
-          <div className="mt-4 text-sm">
-            <div className="mb-1 font-medium">Live votes</div>
-            <div className="flex flex-wrap gap-2 text-xs text-gray-700">
-              {Object.entries(ratings).map(([n, s]) => (
-                <span key={n} className="rounded-lg border bg-white px-2 py-1">
-                  {n}: <b>{formatScore(Number(s))}</b>
-                </span>
-              ))}
-            </div>
+          <div className="mt-5">
+            <div className="mb-2 text-sm font-semibold">Live votes</div>
+            {sorted.length === 0 ? (
+              <div className="rounded-xl border bg-white p-3 text-sm text-gray-600">No votes yet — be the first!</div>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {sorted.map(([name, score]) => {
+                  const isYou = name === currentUser;
+                  return (
+                    <div key={name} className={`flex items-center gap-3 rounded-2xl border bg-white p-3 ${isYou ? "ring-2 ring-black" : ""}`}>
+                      <Avatar name={name} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">
+                          {name} {isYou && <span className="ml-1 rounded bg-black px-1.5 py-0.5 text-xs font-semibold text-white">You</span>}
+                        </div>
+                      </div>
+                      <div className="rounded-full border px-2 py-0.5 text-sm font-semibold">{formatScore(score)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          <div className="mt-4 flex gap-2">
+          <div className="mt-5">
             <button className="rounded-xl border px-4 py-2" onClick={onEnd}>
               End voting
             </button>
@@ -417,42 +528,328 @@ function ActiveVoting({
 }
 
 // ============================
-// History
+// History cards (Extended + Compact)
 // ============================
-function HistoryCard({ v }: { v: any }) {
-  const ratings = (v.ratings || {}) as Record<string, number>;
-  const scores = Object.values(ratings).map(Number) as number[];
-  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-
-  return (
-    <Card>
-      <div className="flex gap-4">
-        {v.movie.poster_path && (
-          <img src={posterUrl(v.movie.poster_path, "w185")} className="h-24 w-16 rounded-lg object-cover" />
-        )}
-        <div className="flex-1">
-          <div className="flex items-start gap-2">
-            <div className="font-semibold">{v.movie.title}</div>
-            <div className="text-xs text-gray-500">{new Date(v.started_at).toLocaleString()}</div>
-            {v.picked_by && <div className="ml-auto text-xs text-gray-600">Picked by: <b>{v.picked_by}</b></div>}
-          </div>
-          <div className="text-sm text-gray-700 line-clamp-2">{v.movie.overview}</div>
-          <div className="mt-2 flex items-center gap-3 text-xs text-gray-700">
-            <span>Votes: <b>{scores.length}</b></span>
-            <span>Avg: <b>{avg !== null ? formatScore(avg) : "—"}</b></span>
-          </div>
-          {Object.keys(ratings).length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-2 text-xs text-gray-600">
-              {Object.entries(ratings).map(([n, s]) => (
-                <span key={n} className="rounded-md border px-2 py-0.5">
-                  {n}: <b>{formatScore(Number(s))}</b>
-                </span>
-              ))}
+function HistoryCardExtended({ v }: { v: any }) {
+    const ratings = (v.ratings || {}) as Record<string, number>;
+    const scores = Object.values(ratings).map(Number);
+    const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  
+    // ---- Colore gradiente per la media (1 → rosso, 10 → verde)
+    const avgHue = (() => {
+      if (avg == null) return 0;
+      const t = Math.max(1, Math.min(10, avg));
+      return ((t - 3) / 8) * 120; // 0..120
+    })();
+  
+    // ---- Avatar del picker
+    function PickerAvatar({ name }: { name: string }) {
+      const avatar = loadAvatarFor(name);
+      if (avatar) {
+        return (
+          <img
+            src={avatar}
+            alt={name}
+            className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow"
+          />
+        );
+      }
+      const initial = name?.[0]?.toUpperCase() || "?";
+      return (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-sm font-bold ring-2 ring-white shadow">
+          {initial}
+        </div>
+      );
+    }
+  
+    // ---- Meta locale + lazy fetch + cache
+    const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>(() => ({
+      poster_path: v?.movie?.poster_path,
+      overview: v?.movie?.overview,
+    }));
+  
+    React.useEffect(() => {
+      const title = v?.movie?.title || "";
+      if (!title) return;
+  
+      const needPoster = !meta?.poster_path;
+      const needOverview = !meta?.overview;
+      if (!needPoster && !needOverview) return;
+  
+      const cache = getMetaCache();
+      const cached = cache[title];
+      if (cached && (cached.poster_path || cached.overview)) {
+        setMeta(m => ({
+          poster_path: m.poster_path || cached.poster_path,
+          overview: m.overview || cached.overview,
+        }));
+        return;
+      }
+  
+      (async () => {
+        const fetched = await fetchMetaForTitle(title);
+        if (fetched) {
+          setMeta(m => ({
+            poster_path: m.poster_path || fetched.poster_path,
+            overview: m.overview || fetched.overview,
+          }));
+          const c = getMetaCache();
+          c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
+          setMetaCache(c);
+        }
+      })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [v?.movie?.title]);
+  
+    const poster = meta?.poster_path || v?.movie?.poster_path;
+    const overview = meta?.overview ?? v?.movie?.overview;
+  
+    return (
+      <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 transition hover:shadow-md">
+        {/* HEADER */}
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          {v.picked_by && (
+            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1">
+              <PickerAvatar name={v.picked_by} />
+              <span className="text-sm font-medium">{v.picked_by}</span>
             </div>
           )}
+          <div className="mx-1 text-gray-300">•</div>
+          <h3 className="min-w-0 text-lg font-semibold leading-tight">
+            <span className="break-words">{v.movie?.title || "Untitled"}</span>
+          </h3>
+          {v.started_at && (
+            <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600">
+              {new Date(v.started_at).toLocaleString()}
+            </span>
+          )}
+        </div>
+  
+        {/* BODY: poster + overview */}
+        <div className="grid gap-4 md:grid-cols-[120px,1fr]">
+          <div className="flex justify-center md:justify-start">
+            {poster ? (
+              <img
+                src={posterUrl(poster, "w185")}
+                alt={v.movie?.title}
+                className="h-44 w-28 rounded-2xl border border-gray-200 object-cover shadow-sm"
+              />
+            ) : (
+              <div className="flex h-44 w-28 items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500">
+                No poster
+              </div>
+            )}
+          </div>
+  
+          <p className="min-w-0 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800">
+            {overview && overview.trim().length > 0 ? overview : "No description available."}
+          </p>
+        </div>
+  
+        {/* FOOTER: media + voti */}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          {avg !== null && (
+            <div
+              className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
+              style={{
+                background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
+              }}
+              aria-label={`Average ${formatScore(avg)}`}
+              title={`Average ${formatScore(avg)}`}
+            >
+              {/* stellina svg per un look più pulito */}
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                className="h-4 w-4"
+              >
+                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.803 2.036a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118L10.95 14.9a1 1 0 00-1.175 0l-2.984 2.083c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.155 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.95-.69l1.895-3.293z" />
+              </svg>
+              <span>Avg {formatScore(avg)}</span>
+              <span className="ml-1 text-xs opacity-85">({scores.length})</span>
+            </div>
+          )}
+  
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(ratings).map(([n, s]) => (
+              <span
+                key={n}
+                className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm"
+                title={`${n}: ${formatScore(Number(s))}`}
+              >
+                {n}: {formatScore(Number(s))}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
-    </Card>
+    );
+  }
+  
+  
+
+function HistoryCardCompact({ v }: { v: any }) {
+    const ratings = (v.ratings || {}) as Record<string, number>;
+    const scores = Object.values(ratings).map(Number);
+    const avg =
+      scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  
+    // colore sfumato in base alla media (1 → rosso, 10 → verde)
+    const avgHue = (() => {
+      if (avg == null) return 0;
+      // 1..10 → 0..120 (rosso → verde). Clamp per sicurezza.
+      const t = Math.max(1, Math.min(10, avg));
+      return ((t - 3) / 8) * 120;
+    })();
+  
+    function PickerAvatar({ name }: { name: string }) {
+      const avatar = loadAvatarFor(name);
+      if (avatar) {
+        return (
+          <img
+            src={avatar}
+            alt={name}
+            className="h-7 w-7 rounded-full object-cover ring-2 ring-white shadow"
+          />
+        );
+      }
+      const initial = name?.[0]?.toUpperCase() || "?";
+      return (
+        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-200 text-xs font-bold ring-2 ring-white shadow">
+          {initial}
+        </div>
+      );
+    }
+  
+    return (
+      <div className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm transition hover:shadow-md">
+        {/* RIGA 1 — picker + titolo */}
+        <div className="flex flex-wrap items-center gap-2">
+          {v.picked_by && (
+            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1">
+              <PickerAvatar name={v.picked_by} />
+              <span className="text-sm font-medium">{v.picked_by}</span>
+            </div>
+          )}
+          <div className="mx-1 text-gray-300">•</div>
+          <div className="min-w-0 text-[15px] font-semibold leading-tight">
+            <span className="break-words">{v.movie?.title || "Untitled"}</span>
+          </div>
+        </div>
+  
+        {/* RIGA 2 — media + voti */}
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          {avg !== null && (
+            <div
+              className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
+              style={{
+                background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
+              }}
+              aria-label={`Average ${formatScore(avg)}`}
+              title={`Average ${formatScore(avg)}`}
+            >
+              <span className="leading-none">★</span>
+              <span>Avg {formatScore(avg)}</span>
+            </div>
+          )}
+  
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(ratings).map(([n, s]) => (
+              <span
+                key={n}
+                className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm"
+                title={`${n}: ${formatScore(Number(s))}`}
+              >
+                {n}: {formatScore(Number(s))}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
+  
+  
+
+// ============================
+// Profile – avatar + list of movies you picked (reuse HistoryCardExtended)
+// ============================
+function Profile({ user, history, onAvatarSaved }: { user: string; history: any[]; onAvatarSaved?: () => void }) {
+  const profileKey = `${K_PROFILE_PREFIX}${user}`;
+  const [avatar, setAvatar] = useState<string | null>(loadAvatarFor(user));
+  const pickedByMe = useMemo(() => history.filter((h) => h?.picked_by === user), [history, user]);
+
+  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      setAvatar(dataUrl);
+      lsSetJSON(profileKey, { avatar: dataUrl });
+      onAvatarSaved?.();
+    };
+    reader.readAsDataURL(file);
+  }
+  function clearAvatar() {
+    localStorage.removeItem(profileKey);
+    setAvatar(null);
+    onAvatarSaved?.();
+  }
+
+  return (
+    <>
+      <Card>
+        <h3 className="mb-3 text-lg font-semibold">👤 Your profile</h3>
+        <div className="flex items-start gap-3">
+          {avatar ? (
+            <img src={avatar} className="h-20 w-20 rounded-full object-cover" alt={user} />
+          ) : (
+            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gray-200 text-xl font-bold">
+              {user.slice(0, 2).toUpperCase()}
+            </div>
+          )}
+          <div>
+            <div className="text-sm text-gray-700">
+              Logged in as <b>{user}</b>
+            </div>
+            <div className="mt-2 flex gap-2">
+              <label className="cursor-pointer rounded-xl border px-3 py-2 text-sm">
+                Change image
+                <input type="file" accept="image/*" onChange={onFile} className="hidden" />
+              </label>
+              {avatar && (
+                <button className="rounded-xl border px-3 py-2 text-sm" onClick={clearAvatar}>
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <Card>
+        <h3 className="mb-3 text-lg font-semibold">🎬 Movies you picked</h3>
+        <div className="grid gap-3">
+          {pickedByMe.length === 0 ? (
+            <div className="text-sm text-gray-600">No movies yet. Start one from the “Vote” tab.</div>
+          ) : (
+            pickedByMe
+              .slice()
+              .sort((a, b) => {
+                const ta = a?.started_at ? new Date(a.started_at).getTime() : 0;
+                const tb = b?.started_at ? new Date(b.started_at).getTime() : 0;
+                if (ta !== tb) return tb - ta;
+                if (typeof a.id === "number" && typeof b.id === "number") return a.id - b.id;
+                return 0;
+              })
+              .map((v) => <HistoryCardExtended key={v.id} v={v} />)
+          )}
+        </div>
+      </Card>
+    </>
   );
 }
 
@@ -461,39 +858,69 @@ function HistoryCard({ v }: { v: any }) {
 // ============================
 export default function CinemaNightApp() {
   const [user, setUser] = useState<string>("");
-  const [tab, setTab] = useState<"vote" | "history">("vote");
+  const [tab, setTab] = useState<"vote" | "history" | "profile">("vote");
 
   const [pickedMovie, setPickedMovie] = useState<any | null>(null);
   const [history, setHistory] = useState<any[]>([]);
-  const [activeVote, setActiveVote] = useState<any | null>(null); // { id, movie, picked_by, started_at }
+  const [activeVote, setActiveVote] = useState<any | null>(null);
   const [activeRatings, setActiveRatings] = useState<Record<string, number>>({});
+  const [historyMode, setHistoryMode] = useState<"extended" | "compact">("extended");
 
-  // Derived: known users from history (people who have voted before)
+  // Known users from history (for datalist)
   const knownUsers = useMemo(() => {
     const set = new Set<string>();
     for (const h of history) {
       Object.keys(h?.ratings || {}).forEach((u) => set.add(u));
       if (h?.picked_by) set.add(h.picked_by);
     }
-    // include current user too
     if (user) set.add(user);
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [history, user]);
+    }, [history, user]);
 
-  // Init + realtime sync
-  useEffect(() => {
-    setUser(lsGetJSON<string | null>(K_USER, "") || "");
-    setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
-    setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
-    setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+    // Init + realtime sync + seed if empty
+    useEffect(() => {
+        (async () => {
+        setUser(lsGetJSON<string | null>(K_USER, "") || "");
 
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === K_ACTIVE_VOTE) setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
-      if (e.key === K_ACTIVE_RATINGS) setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
-      if (e.key === K_VIEWINGS) setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+        // history with optional seeding
+    let hist = lsGetJSON<any[]>(K_VIEWINGS, []);
+    if (hist.length === 0) {
+    // try dynamic import of ./seed (if exists)
+    try {
+        // @ts-ignore
+        const mod = await import("./seed");
+        if (Array.isArray(mod?.CIRCO_SEED) && mod.CIRCO_SEED.length) {
+        hist = mod.CIRCO_SEED as any[];
+        }
+    } catch {}
+    // fallback: try /circo_seed.json in public
+    if (hist.length === 0) {
+        try {
+        const res = await fetch("/circo_seed.json");
+        if (res.ok) {
+            const arr = await res.json();
+            if (Array.isArray(arr) && arr.length) hist = arr;
+        }
+        } catch {}
+    }
+    if (hist.length > 0) {
+        // 🔄 inverti l'ordine del CSV/seed: ultima riga in cima
+        hist = hist.slice().reverse();
+        lsSetJSON(K_VIEWINGS, hist);
+    }
+    }
+    setHistory(hist);
+      setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
+      setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+
+      const onStorage = (e: StorageEvent) => {
+        if (e.key === K_ACTIVE_VOTE) setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
+        if (e.key === K_ACTIVE_RATINGS) setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+        if (e.key === K_VIEWINGS) setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
+      };
+      window.addEventListener("storage", onStorage);
+      return () => window.removeEventListener("storage", onStorage);
+    })();
   }, []);
 
   // Auth
@@ -512,7 +939,7 @@ export default function CinemaNightApp() {
     setPickedMovie(details || res);
   };
 
-  // Start voting (with pickedBy)
+  // Start voting
   const startVoting = (movie: any, pickedBy: string) => {
     const session = { id: Date.now(), movie, picked_by: pickedBy, started_at: new Date().toISOString() };
     lsSetJSON(K_ACTIVE_VOTE, session);
@@ -554,7 +981,7 @@ export default function CinemaNightApp() {
       {!user ? (
         <Login onLogin={login} />
       ) : (
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-6xl">
           <Header user={user} onLogout={logout} tab={tab} setTab={setTab} />
 
           {tab === "vote" && (
@@ -571,9 +998,7 @@ export default function CinemaNightApp() {
               ) : (
                 <>
                   <SearchMovie onPick={onPick} />
-                  {pickedMovie && (
-                    <StartVoteCard movie={pickedMovie} knownUsers={knownUsers} onStartVoting={startVoting} />
-                  )}
+                  {pickedMovie && <StartVoteCard movie={pickedMovie} knownUsers={knownUsers} onStartVoting={startVoting} />}
                 </>
               )}
             </div>
@@ -582,16 +1007,42 @@ export default function CinemaNightApp() {
           {tab === "history" && (
             <div className="mt-2">
               <Card>
-                <h3 className="mb-2 text-lg font-semibold">📜 Past nights</h3>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">📜 Past nights</h3>
+                  <button
+                    className="rounded-xl border px-3 py-1 text-sm"
+                    onClick={() => setHistoryMode(historyMode === "extended" ? "compact" : "extended")}
+                  >
+                    Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
+                  </button>
+                </div>
                 <div className="grid gap-3">
-                  {history.length === 0 && (
-                    <div className="text-sm text-gray-600">No entries yet. Start a vote from the “Vote” tab.</div>
-                  )}
-                  {history.map((v) => (
-                    <HistoryCard key={v.id} v={v} />
-                  ))}
+                  {history.length === 0 && <div className="text-sm text-gray-600">No entries yet. Start a vote from the “Vote” tab.</div>}
+
+                  {[...history]
+                    // Order: newest first (by date); fallback: last row of CSV first (seed ids ascending)
+                    .sort((a, b) => {
+                      const ta = a?.started_at ? new Date(a.started_at).getTime() : 0;
+                      const tb = b?.started_at ? new Date(b.started_at).getTime() : 0;
+                      if (ta !== tb) return tb - ta;
+                      if (typeof a.id === "number" && typeof b.id === "number") return a.id - b.id;
+                      return 0;
+                    })
+                    .map((v) =>
+                      historyMode === "extended" ? (
+                        <HistoryCardExtended key={v.id} v={v} />
+                      ) : (
+                        <HistoryCardCompact key={v.id} v={v} />
+                      )
+                    )}
                 </div>
               </Card>
+            </div>
+          )}
+
+          {tab === "profile" && (
+            <div className="mt-2 grid gap-4">
+              <Profile user={user} history={history} onAvatarSaved={() => {}} />
             </div>
           )}
         </div>
