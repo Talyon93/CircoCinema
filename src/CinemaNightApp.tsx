@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 /**
  * Circo Cinema – complete app (with Dark Mode toggle)
@@ -23,6 +24,155 @@ const K_ACTIVE_RATINGS = "cn_active_ratings"; // { [user]: number }
 const K_PROFILE_PREFIX = "cn_profile_";       // `${K_PROFILE_PREFIX}${username}` -> { avatar?: string }
 const K_TMDB_CACHE = "cn_tmdb_cache";         // cache poster/overview per titolo
 const K_THEME = "cn_theme";                   // 'light' | 'dark'
+
+
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+
+
+const sb = SUPABASE_URL && SUPABASE_ANON_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null; // fallback automatico a localStorage
+
+const SB_ROW_ID = "singleton" as const; // una sola riga condivisa
+
+
+// ===== Shared state su Supabase (con fallback locale) =====
+// ===== Supabase Storage (JSON history) =====
+const STORAGE_BUCKET = "circo";
+const STORAGE_HISTORY_KEY = "history.json";
+
+
+async function loadHistoryFromStorage(): Promise<any[] | null> {
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.storage
+      .from(STORAGE_BUCKET)
+      .download(STORAGE_HISTORY_KEY);
+    if (error || !data) return null;
+    const text = await data.text();
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveHistoryToStorage(list: any[]): Promise<{ error: any | null }> {
+  if (!sb) return { error: null };
+  try {
+    const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
+    const { error } = await sb.storage
+      .from(STORAGE_BUCKET)
+      .upload(STORAGE_HISTORY_KEY, blob, { upsert: true, contentType: "application/json" });
+    if (error) {
+      console.error("[saveHistoryToStorage] upload error:", error);
+      return { error };
+    }
+    return { error: null };
+  } catch (e) {
+    console.error("[saveHistoryToStorage] exception:", e);
+    return { error: e };
+  }
+}
+
+async function persistHistory(list: any[]) {
+  // Update ottimistico UI già fatto a monte (setHistory(list))
+  if (!sb) {
+    lsSetJSON(K_VIEWINGS, list);
+    return;
+  }
+
+  // 1) Storage: sovrascrivi /circo/history.json
+  const { error: upErr } = await saveHistoryToStorage(list);
+
+  // 2) Tabella cn_state: serve per realtime + fallback lettura
+  const { error: stErr } = await saveSharedState({ history: list });
+
+  if (upErr || stErr) {
+    console.error("[persistHistory] errors", { upErr, stErr });
+    alert("Non sono riuscito a salvare sul server. Controlla le policy del bucket/tabella (vedi console).");
+    return;
+  }
+
+  // 3) (Facoltativo ma utile) Verifica round-trip dal file su Storage:
+  const roundTrip = await loadHistoryFromStorage();
+  if (!Array.isArray(roundTrip) || roundTrip.length !== list.length) {
+    console.warn("[persistHistory] roundTrip mismatch", { roundTripLen: roundTrip?.length, expected: list.length });
+  }
+}
+
+
+
+type SharedState = {
+  id: string;
+  history: any[];
+  active: any | null;
+  ratings: Record<string, number>;
+  updated_at?: string;
+};
+
+async function loadSharedState(): Promise<SharedState> {
+  if (!sb) {
+    return {
+      id: SB_ROW_ID,
+      history: lsGetJSON<any[]>(K_VIEWINGS, []),
+      active: lsGetJSON<any | null>(K_ACTIVE_VOTE, null),
+      ratings: lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}),
+    };
+  }
+  const { data, error } = await sb
+    .from("cn_state")
+    .select("*")
+    .eq("id", SB_ROW_ID)
+    .single();
+  if (error || !data) {
+    return { id: SB_ROW_ID, history: [], active: null, ratings: {} };
+  }
+  return data as SharedState;
+}
+
+async function saveSharedState(partial: Partial<SharedState>) {
+  if (!sb) {
+    if (partial.history) lsSetJSON(K_VIEWINGS, partial.history);
+    if (partial.active !== undefined) lsSetJSON(K_ACTIVE_VOTE, partial.active);
+    if (partial.ratings) lsSetJSON(K_ACTIVE_RATINGS, partial.ratings);
+    return { error: null as any };
+  }
+
+  const current = await loadSharedState();
+  const next: SharedState = {
+    id: SB_ROW_ID,
+    history: partial.history ?? current.history,
+    active: partial.active === undefined ? current.active : partial.active,
+    ratings: partial.ratings ?? current.ratings,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await sb.from("cn_state").upsert(next, { onConflict: "id" });
+  if (error) {
+    console.error("[saveSharedState] upsert error:", error);
+    return { error };
+  }
+  return { error: null as any };
+}
+
+function subscribeSharedState(onChange: (s: SharedState) => void) {
+  if (!sb) return () => {};
+  const channel = sb
+    .channel("cn_state_realtime")
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "cn_state", filter: `id=eq.${SB_ROW_ID}` },
+      (payload: any) => {
+        const row = payload?.new as SharedState;
+        if (row) onChange(row);
+      }
+    )
+    .subscribe();
+  return () => sb.removeChannel(channel);
+}
 
 // ============================
 // Helpers
@@ -886,33 +1036,54 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
     );
   }
 
-  const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>(() => ({
+
+  // --- META STATE (poster/overview) sincronizzato con v.movie ---
+  const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>({
     poster_path: v?.movie?.poster_path,
     overview: v?.movie?.overview,
-  }));
+  });
 
-  React.useEffect(() => {
-    const title = v?.movie?.title || "";
-    if (!title) return;
+// 1) Sync immediato con i cambi del film (anche se il titolo resta uguale)
+React.useEffect(() => {
+  setMeta({
+    poster_path: v?.movie?.poster_path,
+    overview: v?.movie?.overview,
+  });
+}, [v?.id, v?.movie?.id, v?.movie?.poster_path, v?.movie?.overview]);
 
-    const needPoster = !meta?.poster_path;
-    const needOverview = !meta?.overview;
-    if (!needPoster && !needOverview) return;
+// 2) Se manca poster/overview, prova cache → TMDB (chiave: titolo)
+const inFlightTitleRef = React.useRef<string | null>(null);
 
-    const cache = getMetaCache();
-    const cached = cache[title];
-    if (cached && (cached.poster_path || cached.overview)) {
-      setMeta(m => ({
-        poster_path: m.poster_path || cached.poster_path,
-        overview: m.overview || cached.overview,
-      }));
-      return;
-    }
+React.useEffect(() => {
+  const title = (v?.movie?.title || "").trim();
+  if (!title) return;
 
-    (async () => {
+  const needPoster = !meta?.poster_path;
+  const needOverview = !meta?.overview;
+  if (!needPoster && !needOverview) return;
+
+  // Evita fetch duplicati per lo stesso titolo
+  if (inFlightTitleRef.current === title) return;
+  inFlightTitleRef.current = title;
+
+  // Cache locale
+  const cache = getMetaCache();
+  const cached = cache[title];
+  if (cached && (cached.poster_path || cached.overview)) {
+    setMeta((m) => ({
+      poster_path: m.poster_path || cached.poster_path,
+      overview: m.overview || cached.overview,
+    }));
+    inFlightTitleRef.current = null;
+    return;
+  }
+
+  // Fallback: fetch da TMDB
+  (async () => {
+    try {
       const fetched = await fetchMetaForTitle(title);
       if (fetched) {
-        setMeta(m => ({
+        setMeta((m) => ({
           poster_path: m.poster_path || fetched.poster_path,
           overview: m.overview || fetched.overview,
         }));
@@ -920,12 +1091,14 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
         c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
         setMetaCache(c);
       }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v?.movie?.title]);
+    } finally {
+      inFlightTitleRef.current = null;
+    }
+  })();
+}, [v?.movie?.title, meta?.poster_path, meta?.overview]);
 
-  const poster = meta?.poster_path || v?.movie?.poster_path;
-  const overview = meta?.overview ?? v?.movie?.overview;
+const poster = meta?.poster_path || v?.movie?.poster_path || "";
+const overview = (meta?.overview ?? v?.movie?.overview ?? "").trim();
 
   return (
     <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
@@ -1238,7 +1411,42 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
             <div className="mt-2 flex gap-2">
               <label className="cursor-pointer rounded-xl border px-3 py-2 text-sm dark:border-zinc-700">
                 Change image
-                <input type="file" accept="image/*" onChange={onFile} className="hidden" />
+                <input
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const inputEl = e.currentTarget;
+                    const f = inputEl.files?.[0];
+                    if (!f) return;
+
+                    importHistoryFromFile(f, async (list) => {
+                      try {
+                        if (sb) {
+                          // 1) salva file su Storage (fonte di verità)
+                          const { error: upErr } = await saveHistoryToStorage(list);
+                          // 2) aggiorna anche cn_state (per realtime e coerenza)
+                          const { error: stErr } = await saveSharedState({ history: list /*, active: null, ratings: {}*/ });
+
+                          // 3) update ottimistico
+                          setHistory(list);
+
+                          if (upErr || stErr) {
+                            alert("Import completato con avvisi (vedi console per dettagli).");
+                          } else {
+                            alert(`Import OK: ${list.length} voci salvate su Storage + Supabase`);
+                          }
+                        } else {
+                          lsSetJSON(K_VIEWINGS, list);
+                          setHistory(list);
+                          alert(`Import OK: ${list.length} voci caricate in locale`);
+                        }
+                      } finally {
+                        inputEl.value = "";
+                      }
+                    });
+                  }}
+                />
               </label>
               {avatar && (
                 <button className="rounded-xl border px-3 py-2 text-sm dark:border-zinc-700" onClick={clearAvatar}>
@@ -1594,6 +1802,38 @@ function Stats({
   
   
   
+// ==== Import/Export history (cn_viewings) ====
+// Salva un file JSON con la history corrente
+function exportHistoryJSON(list: any[]) {
+  const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  a.download = `circo_history_${stamp}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Legge un file JSON e lo mette in cn_viewings
+function importHistoryFromFile(
+  file: File,
+  onDone: (list: any[]) => void
+) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(String(reader.result || "[]"));
+      if (!Array.isArray(parsed)) throw new Error("File non valido: atteso un array");
+      onDone(parsed);
+    } catch (e: any) {
+      alert(e?.message || "Errore nel file");
+    }
+  };
+  reader.readAsText(file);
+}
+
+  
 
 // ============================
 // App
@@ -1621,62 +1861,74 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
   const [isBackfilling, setIsBackfilling] = useState(false);
 
   const backfillHistoryGenres = async () => {
-    if (isBackfilling) return;
-    setIsBackfilling(true);
-    try {
-      const list = lsGetJSON<any[]>(K_VIEWINGS, []);
-      let changed = false;
+  if (isBackfilling) return;
+  setIsBackfilling(true);
+  try {
+    // Usa la sorgente attuale dello stato (coerente con l'UI)
+    const list = history.slice();
+    let changed = false;
 
-      for (let i = 0; i < list.length; i++) {
-        const v = list[i];
-        const hasGenres = Array.isArray(v?.movie?.genres) && v.movie.genres.length > 0;
-        if (hasGenres) continue;
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      const hasGenres = Array.isArray(v?.movie?.genres) && v.movie.genres.length > 0;
+      if (hasGenres) continue;
 
-        const enriched = await enrichFromTmdbByTitleOrId(v.movie);
-        if (enriched !== v.movie) {
-          list[i] = { ...v, movie: enriched };
-          changed = true;
-        }
-        await sleep(200);
+      const enriched = await enrichFromTmdbByTitleOrId(v.movie);
+      if (enriched !== v.movie) {
+        list[i] = { ...v, movie: enriched };
+        changed = true;
       }
-
-      if (changed) {
-        lsSetJSON(K_VIEWINGS, list);
-        setHistory(list);
-      }
-    } finally {
-      setIsBackfilling(false);
+      await sleep(200);
     }
+
+    if (changed) {
+      // Aggiorna subito l'UI
+      setHistory(list);
+      // Persisti su Storage + cn_state (o locale)
+      await persistHistory(list);
+    }
+  } catch (e) {
+    console.error("[backfillHistoryGenres] failed:", e);
+  } finally {
+    setIsBackfilling(false);
+  }
   };
+
 
   const backfillHistoryRuntime = async () => {
-    if (isBackfillingRuntime) return;
-    setIsBackfillingRuntime(true);
-    try {
-      const list = lsGetJSON<any[]>(K_VIEWINGS, []);
-      let changed = false;
-  
-      for (let i = 0; i < list.length; i++) {
-        const v = list[i];
-        const rt = Number((v?.movie as any)?.runtime);
-        if (!Number.isNaN(rt) && rt > 0) continue;
-  
-        const withRt = await ensureRuntime(v.movie);
-        if (withRt !== v.movie) {
-          list[i] = { ...v, movie: withRt };
-          changed = true;
-        }
-        await sleep(200); // gentile con TMDB
+  if (isBackfillingRuntime) return;
+  setIsBackfillingRuntime(true);
+  try {
+    // Parti dalla lista mostrata (così rispetti filtri/ordine corrente)
+    const list = history.slice();
+    let changed = false;
+
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      const rt = Number((v?.movie as any)?.runtime);
+      if (!Number.isNaN(rt) && rt > 0) continue;
+
+      const withRt = await ensureRuntime(v.movie);
+      if (withRt !== v.movie) {
+        list[i] = { ...v, movie: withRt };
+        changed = true;
       }
-  
-      if (changed) {
-        lsSetJSON(K_VIEWINGS, list);
-        setHistory(list);
-      }
-    } finally {
-      setIsBackfillingRuntime(false);
+      await sleep(200); // gentile con TMDB
     }
+
+    if (changed) {
+      // Aggiorna UI
+      setHistory(list);
+      // Persisti anche lato Supabase (Storage + cn_state) o locale in fallback
+      await persistHistory(list);
+    }
+  } catch (e) {
+    console.error("[backfillHistoryRuntime] failed:", e);
+  } finally {
+    setIsBackfillingRuntime(false);
+  }
   };
+
 
   const pickerOptions = useMemo(() => {
     const s = new Set<string>();
@@ -1744,27 +1996,42 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [history, user]);
 
-  // Init + realtime sync + seed if empty
+  // Init + realtime (Supabase) + seed fallback
   useEffect(() => {
-    (async () => {
-      // 🔄 resetta SEMPRE la history salvata
-      const DEV_RESET = false;
-      if (DEV_RESET) localStorage.removeItem(K_VIEWINGS);
-      
-      // user
-      setUser(lsGetJSON<string | null>(K_USER, "") || "");
+  let off = () => {};
 
-      // history con seeding
+  (async () => {
+    setUser(lsGetJSON<string | null>(K_USER, "") || "");
+
+    if (sb) {
+      // 1) prova JSON su Storage
+      let hist: any[] | null = await loadHistoryFromStorage();
+
+      // 2) se non esiste/errore, cade su cn_state
+      if (!hist) {
+        const s = await loadSharedState();
+        hist = s.history || [];
+        setActiveVote(s.active || null);
+        setActiveRatings(s.ratings || {});
+      }
+
+      setHistory(hist || []);
+
+      // realtime su cn_state (così se qualcuno salva da altro client, aggiorni)
+      off = subscribeSharedState((row) => {
+        setHistory(row.history || []);
+        setActiveVote(row.active || null);
+        setActiveRatings(row.ratings || {});
+      });
+    } else {
+      // Fallback locale invariato
       let hist = lsGetJSON<any[]>(K_VIEWINGS, []);
       if (hist.length === 0) {
         try {
           // @ts-ignore
           const mod = await import("./seed");
-          if (Array.isArray(mod?.CIRCO_SEED) && mod.CIRCO_SEED.length) {
-            hist = mod.CIRCO_SEED as any[];
-          }
+          if (Array.isArray(mod?.CIRCO_SEED) && mod.CIRCO_SEED.length) hist = mod.CIRCO_SEED as any[];
         } catch {}
-
         if (hist.length === 0) {
           try {
             const res = await fetch("/circo_seed.json");
@@ -1774,34 +2041,36 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
             }
           } catch {}
         }
-
         if (hist.length > 0) {
           hist = hist.slice().reverse();
           lsSetJSON(K_VIEWINGS, hist);
         }
       }
-
       setHistory(hist);
       setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
       setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
 
-      // sync multi-tab
       const onStorage = (e: StorageEvent) => {
-        if (e.key === K_ACTIVE_VOTE)
-          setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
-        if (e.key === K_ACTIVE_RATINGS)
-          setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
-        if (e.key === K_VIEWINGS)
-          setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
+        if (e.key === K_ACTIVE_VOTE) setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
+        if (e.key === K_ACTIVE_RATINGS) setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+        if (e.key === K_VIEWINGS) setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
         if (e.key === K_THEME) {
           const t = (localStorage.getItem(K_THEME) as Theme) || "dark";
           applyTheme(t);
         }
       };
       window.addEventListener("storage", onStorage);
-      return () => window.removeEventListener("storage", onStorage);
-    })();
-  }, []);
+      const prevOff = off;
+      off = () => {
+        window.removeEventListener("storage", onStorage);
+        prevOff();
+      };
+    }
+  })();
+
+  return () => off();
+}, []);
+
 
   useEffect(() => {
     const hasAnyGenre = history.some(
@@ -1838,15 +2107,19 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [history.length, isBackfillingRuntime]);
     
-    function updateViewingMovie(viewingId: any, nextMovie: any) {
-        setHistory((prev) => {
-          const L = prev.map((v) =>
-            v.id === viewingId ? { ...v, movie: nextMovie } : v
-          );
-          lsSetJSON(K_VIEWINGS, L);
-          return L;
-        });
-      }
+    async function updateViewingMovie(viewingId: any, nextMovie: any) {
+    try {
+      const nextList = history.map(v => v.id === viewingId ? { ...v, movie: nextMovie } : v);
+      setHistory(nextList);                 // UI subito
+      await persistHistory(nextList);       // ⬅️ server write
+    } catch (e) {
+      console.error("[updateViewingMovie] failed:", e);
+      alert("Errore durante il salvataggio.");
+    }
+  }
+
+
+
 
   // Auth
   const login = (name: string) => {
@@ -1866,7 +2139,7 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
 
   const startVoting = async (movie: any, pickedBy: string) => {
     const movieWithGenres = await ensureGenres(movie);
-
+  
     const session = {
       id: Date.now(),
       movie: {
@@ -1876,21 +2149,32 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
       picked_by: pickedBy,
       started_at: new Date().toISOString(),
     };
-
-    lsSetJSON(K_ACTIVE_VOTE, session);
-    lsSetJSON(K_ACTIVE_RATINGS, {});
+  
     setActiveVote(session);
     setActiveRatings({});
+  
+    if (sb) {
+      await saveSharedState({ active: session, ratings: {} });
+    } else {
+      lsSetJSON(K_ACTIVE_VOTE, session);
+      lsSetJSON(K_ACTIVE_RATINGS, {});
+    }
   };
+  
 
-  const sendVote = (score: number) => {
+  const sendVote = async (score: number) => {
     if (!user || !activeVote) return;
     const next = { ...activeRatings, [user]: roundToQuarter(score) };
-    lsSetJSON(K_ACTIVE_RATINGS, next);
     setActiveRatings(next);
+  
+    if (sb) {
+      await saveSharedState({ ratings: next });
+    } else {
+      lsSetJSON(K_ACTIVE_RATINGS, next);
+    }
   };
 
-  const endVoting = () => {
+  const endVoting = async () => {
     if (!activeVote) return;
     const entry = {
       id: activeVote.id,
@@ -1899,16 +2183,23 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
       movie: activeVote.movie,
       ratings: activeRatings,
     };
-    const L = lsGetJSON<any[]>(K_VIEWINGS, []);
-    L.unshift(entry);
-    lsSetJSON(K_VIEWINGS, L);
-    localStorage.removeItem(K_ACTIVE_VOTE);
-    localStorage.removeItem(K_ACTIVE_RATINGS);
-    setHistory(L);
+  
+    const nextHistory = [entry, ...history];
+    setHistory(nextHistory);
     setActiveVote(null);
     setActiveRatings({});
+  
+    if (sb) {
+      await saveSharedState({ history: nextHistory, active: null, ratings: {} });
+    } else {
+      const L = lsGetJSON<any[]>(K_VIEWINGS, []);
+      L.unshift(entry);
+      lsSetJSON(K_VIEWINGS, L);
+      localStorage.removeItem(K_ACTIVE_VOTE);
+      localStorage.removeItem(K_ACTIVE_RATINGS);
+    }
   };
-
+  
   return (
     <div className="min-h-screen bg-gray-50 p-4 text-gray-900 dark:bg-zinc-950 dark:text-zinc-100">
       {!user ? (
@@ -1953,20 +2244,32 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
           {tab === "history" && (
             <div className="mt-2">
               <Card>
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold">📜 Past nights</h3>
-                  <button
-                    className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"
-                    onClick={() =>
-                      setHistoryMode(historyMode === "extended" ? "compact" : "extended")
-                    }
-                  >
-                    Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
-                  </button>
-                </div>
+              <div className="mb-3 flex items-center justify-between">
+  <h3 className="text-lg font-semibold">📜 Past nights</h3>
+  <div className="flex items-center gap-2">
+    <button
+      className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"
+      onClick={() =>
+        setHistoryMode(historyMode === "extended" ? "compact" : "extended")
+      }
+    >
+      Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
+    </button>
+
+    {/* Export */}
+    <button
+      className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"
+      onClick={() => exportHistoryJSON(history)}
+      title="Scarica file JSON con la history"
+    >
+      Export JSON
+    </button>
+  </div>
+</div>
 
 
-\           {editingViewing && (
+
+           {editingViewing && (
                 <EditMovieDialog
                     open
                     initialTitle={editingViewing.title}
@@ -1974,7 +2277,7 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
                     onSelect={async (tmdbMovie) => {
                     const det = await tmdbDetails(tmdbMovie.id);
                     const enriched = await ensureGenres(det || tmdbMovie);
-                    updateViewingMovie(editingViewing.id, enriched);
+                    await  updateViewingMovie(editingViewing.id, enriched);
                     setEditingViewing(null);
                     }}
                 />
