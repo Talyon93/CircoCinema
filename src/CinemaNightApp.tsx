@@ -712,7 +712,11 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
           <div
             key={r.id}
             className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50 dark:hover:bg-zinc-900 border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-            onClick={() => onPick(r)}
+            onClick={() => {
+              onPick(r);
+              setResults([]);          // 🔹 nasconde i suggerimenti
+              setQ(r.title || "");     // (opzionale) mostra il titolo scelto nell'input
+            }}
           >
             {r.poster_path && <img src={posterUrl(r.poster_path, "w185")} alt={r.title} className="h-24 w-16 rounded-lg object-cover" />}
             <div className="flex-1">
@@ -2134,7 +2138,7 @@ useEffect(() => {
 
   (async () => {
     // ripristina utente
-    setUser(lsGetJSON<string | null>(K_USER, "") || "");
+    setUser(lsGetJSON<string>(K_USER, ""));
 
     if (sb) {
       const [{ list: storageList, source }, shared] = await Promise.all([
@@ -2285,7 +2289,7 @@ useEffect(() => {
 
   // Auth
   const login = (name: string) => {
-    localStorage.setItem(K_USER, name);
+    lsSetJSON(K_USER, name.trim());
     setUser(name);
   };
   const logout = () => {
