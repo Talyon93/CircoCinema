@@ -55,6 +55,7 @@ function formatCompact(n: number) {
   return `${Math.round(v * 10) / 10}${units[i]}`;
 }
 
+
 // TMDB: prime recensioni
 async function tmdbReviews(tmdbId: number) {
   try {
@@ -998,7 +999,35 @@ function ScoreSlider({
   const clamp = (n: number) => Math.min(max, Math.max(min, n));
   const toPct = (n: number) => ((clamp(n) - min) / (max - min)) * 100;
   const pct = toPct(value);
-  const update = (raw: number) => onChange(roundToQuarter(clamp(raw)));
+  const mid = min + (max - min) / 2;
+
+  const fmt = (n: number) => {
+    try {
+      // usa il tuo formatter se presente
+      // @ts-ignore
+      return typeof formatScore === "function"
+        ? // @ts-ignore
+          formatScore(n)
+        : (Math.round(n * 100) / 100)
+            .toFixed(2)
+            .replace(/\.00$/, "")
+            .replace(/(\.\d)0$/, "$1");
+    } catch {
+      return String(n);
+    }
+  };
+
+  const Pill = ({ children }: { children: React.ReactNode }) => (
+    <span
+      className="
+        rounded-md px-1.5 py-[2px] text-[12px] font-semibold
+        bg-white/90 text-gray-900 ring-1 ring-gray-300 shadow-sm
+        dark:bg-zinc-900/85 dark:text-zinc-50 dark:ring-zinc-700
+      "
+    >
+      {children}
+    </span>
+  );
 
   return (
     <div className="relative">
@@ -1009,20 +1038,25 @@ function ScoreSlider({
           className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-lime-500 to-lime-400"
           style={{ width: `${pct}%` }}
         />
-        {/* Tacche intere */}
-        {Array.from({ length: max - min + 1 }, (_, i) => i + min).map((n) => (
-          <div
-            key={n}
-            className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 bg-white/35"
-            style={{ left: `calc(${toPct(n)}% - 1px)` }}
-          />
-        ))}
+        {/* tacche intere */}
+        {Array.from({ length: Math.floor(max - min) + 1 }, (_, i) => i + min).map(
+          (n) => (
+            <div
+              key={n}
+              className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 bg-white/35"
+              style={{ left: `calc(${toPct(n)}% - 1px)` }}
+            />
+          )
+        )}
       </div>
 
-      {/* Bubble + thumb (solo visual, senza eventi) */}
-      <div className="pointer-events-none absolute -top-12 select-none" style={{ left: `calc(${pct}% - 24px)` }}>
+      {/* Bubble + thumb (solo visuali; non catturano il puntatore) */}
+      <div
+        className="pointer-events-none absolute -top-12 select-none"
+        style={{ left: `calc(${pct}% - 24px)` }}
+      >
         <div className="rounded-xl border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm font-bold text-white shadow-lg">
-          {formatScore(value)}
+          {fmt(value)}
         </div>
       </div>
       <div
@@ -1032,7 +1066,7 @@ function ScoreSlider({
         ●
       </div>
 
-      {/* Input reale (invisibile, area ampia, sopra tutto) */}
+      {/* Range reale: gestisce drag/touch/keyboard */}
       <input
         aria-label="Vote slider"
         type="range"
@@ -1040,20 +1074,31 @@ function ScoreSlider({
         max={max}
         step={step}
         value={value}
-        onInput={(e) => update(parseFloat((e.target as HTMLInputElement).value))}
-        onChange={(e) => update(parseFloat((e.target as HTMLInputElement).value))}
-        className="absolute inset-0 -my-3 h-12 w-full appearance-none bg-transparent opacity-0 z-10 cursor-pointer"
+        onInput={(e) =>
+          onChange(
+            // @ts-ignore
+            roundToQuarter(parseFloat((e.target as HTMLInputElement).value))
+          )
+        }
+        onChange={(e) =>
+          onChange(
+            // @ts-ignore
+            roundToQuarter(parseFloat((e.target as HTMLInputElement).value))
+          )
+        }
+        className="absolute inset-0 h-8 w-full cursor-pointer appearance-none bg-transparent opacity-0"
       />
 
-      {/* Min / mid / max */}
-      <div className="mt-1 flex justify-between text-xs text-zinc-400">
-        <span>{min}</span>
-        <span>{(min + max) / 2}</span>
-        <span>{max}</span>
+      {/* Label pill più visibili */}
+      <div className="mt-1.5 flex justify-between">
+        <Pill>{fmt(min)}</Pill>
+        <Pill>{fmt(mid)}</Pill>
+        <Pill>{fmt(max)}</Pill>
       </div>
     </div>
   );
 }
+
 
 /** Barra voti con avatar sopra le tacche (riutilizzabile ovunque)
  *  - entries: [ [nome, voto], ... ]
@@ -1072,22 +1117,81 @@ function VotesBarWithAvatars({
   entries: [string, number][];
   avg: number | null;
   currentUser?: string;
-  size?: "md" | "sm";
+  size?: "sm" | "md";
   showScale?: boolean;
 }) {
-  const toPct = (n: number) => ((n - 1) / 9) * 100;
-
+  const toPct = (n: number) => ((Number(n) - 1) / 9) * 100;
+  const BADGE_SHIFT = 0.5;
   // dimensioni
-  const trackH   = size === "sm" ? 8 : 16;     // px
-  const tickH    = size === "sm" ? 14 : 24;    // px
-  const avatarSz = size === "sm" ? 16 : 20;    // px
-  const stackStep= size === "sm" ? 8  : 10;    // px
+  const trackH    = size === "sm" ? 8  : 16;
+  const tickH     = size === "sm" ? 14 : 24;
+  const avatarSz  = size === "sm" ? 18 : 22;
+  const countSz   = size === "sm" ? 14 : 16;
 
   const ringByScore = (s: number) =>
     s >= 8 ? "ring-emerald-500/70" : s >= 6 ? "ring-amber-400/70" : "ring-rose-500/70";
 
-  // impilamento avatar se più persone hanno lo stesso voto
-  const stacks = new Map<string, number>();
+  // misura track per soglia in px -> %
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [w, setW] = React.useState(0);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setW(el.clientWidth));
+    setW(el.clientWidth);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // punti ordinati
+  const points = React.useMemo(
+    () =>
+      entries
+        .map(([name, score]) => ({
+          name,
+          score: Number(score),
+          pct: toPct(Number(score)),
+          avatar: loadAvatarFor(name),
+        }))
+        .sort((a, b) => a.pct - b.pct),
+    [entries]
+  );
+
+  // cluster per vicinanza orizzontale
+  const minPct = React.useMemo(() => {
+    if (!w) return 1.4; // fallback
+    const minPx = Math.max(avatarSz * 0.9, 16); // distanza minima tra cluster
+    return (minPx / w) * 100;
+  }, [w, avatarSz]);
+
+  type Cluster = { pct: number; people: typeof points };
+  const clusters: Cluster[] = React.useMemo(() => {
+    const out: Cluster[] = [];
+    let cur: typeof points = [];
+    for (const p of points) {
+      if (!cur.length || Math.abs(p.pct - cur[cur.length - 1].pct) < minPct) {
+        cur.push(p);
+      } else {
+        const pct = cur.reduce((a, b) => a + b.pct, 0) / cur.length;
+        out.push({ pct, people: cur });
+        cur = [p];
+      }
+    }
+    if (cur.length) {
+      const pct = cur.reduce((a, b) => a + b.pct, 0) / cur.length;
+      out.push({ pct, people: cur });
+    }
+    return out;
+  }, [points, minPct]);
+
+  // util: rappresentante del cluster (preferisci l'utente corrente, altrimenti il più alto, tie -> alfabetico)
+  function pickRep(c: Cluster) {
+    const meIdx = currentUser ? c.people.findIndex(p => p.name === currentUser) : -1;
+    if (meIdx >= 0) return c.people[meIdx];
+    return c.people
+      .slice()
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))[0];
+  }
 
   return (
     <div className="w-full">
@@ -1096,11 +1200,12 @@ function VotesBarWithAvatars({
         <span>10</span>
       </div>
 
-      {/* niente overflow hidden: gli avatar possono uscire sopra */}
       <div
-        className="relative w-full rounded-full bg-zinc-800 overflow-visible"
+        ref={ref}
+        className="relative w-full overflow-visible rounded-full bg-zinc-800"
         style={{ height: trackH }}
       >
+        {/* riempimento fino alla media */}
         {avg !== null && (
           <div
             className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
@@ -1108,38 +1213,35 @@ function VotesBarWithAvatars({
           />
         )}
 
-        {entries.map(([name, rawScore]) => {
-          const score = Number(rawScore);
-          const key = score.toFixed(2);
-          const level = stacks.get(key) || 0;
-          stacks.set(key, level + 1);
-
-          const left = `calc(${toPct(score)}% - 1px)`;
-          const avatar = loadAvatarFor(name);
-          const initial = (name?.[0] || "?").toUpperCase();
-          const ring = name === currentUser ? "ring-white" : ringByScore(score);
+        {/* cluster */}
+        {clusters.map((c, i) => {
+          const rep = pickRep(c);
+          const others = c.people.length - 1;
+          const left = `calc(${c.pct}% - 1px)`;
+          const ring =
+            rep.name === currentUser ? "ring-white" : ringByScore(rep.score);
+          const tooltip = c.people
+            .map(p => `${p.name} ${formatScore(p.score)}`)
+            .join(", ");
 
           return (
-            <div key={`${name}-${key}-${level}`} className="absolute pointer-events-none" style={{ left }}>
-              {/* lineetta */}
+            <div key={i} className="absolute pointer-events-none" style={{ left }}>
+              {/* tick del cluster */}
               <div
                 className="absolute top-0 w-[2px] -translate-x-1/2 rounded-full bg-white/90 shadow-[0_0_0_2px_rgba(0,0,0,0.5)]"
                 style={{ height: tickH }}
-                title={formatScore(score)}
               />
-              {/* avatar sopra la lineetta, impilato se duplicati */}
+              {/* avatar rappresentante + badge count */}
               <div
                 className="absolute -translate-x-1/2"
-                style={{
-                  top: -(avatarSz + 4 + level * stackStep),
-                }}
-                title={`${name}: ${formatScore(score)}`}
+                style={{ top: -(avatarSz + 6) }}
+                title={tooltip}
               >
-                {avatar ? (
+                {rep.avatar ? (
                   <img
+                    src={rep.avatar}
+                    alt={rep.name}
                     className={`rounded-full object-cover ring-2 ${ring}`}
-                    src={avatar}
-                    alt={name}
                     style={{ width: avatarSz, height: avatarSz }}
                   />
                 ) : (
@@ -1147,7 +1249,21 @@ function VotesBarWithAvatars({
                     className={`grid place-items-center rounded-full bg-zinc-900 text-[10px] font-bold text-white ring-2 ${ring}`}
                     style={{ width: avatarSz, height: avatarSz }}
                   >
-                    {initial}
+                    {(rep.name?.[0] || "?").toUpperCase()}
+                  </div>
+                )}
+
+                {others > 0 && (
+                  <div
+                    className="absolute grid place-items-center rounded-full border border-zinc-900 bg-white text-[10px] font-bold text-zinc-900 shadow dark:bg-zinc-200"
+                    style={{
+                      width: countSz,
+                      height: countSz,
+                      right: -countSz * BADGE_SHIFT,
+                      bottom: -countSz * 0.2,
+                    }}
+                  >
+                    +{others}
                   </div>
                 )}
               </div>
@@ -1161,6 +1277,21 @@ function VotesBarWithAvatars({
           <span>1</span><span>5</span><span>10</span>
         </div>
       )}
+    </div>
+  );
+}
+
+// Pill dei numeri scala (1 / 5 / 10) — light/dark friendly
+function ScaleLabels({ className = "" }: { className?: string }) {
+  const pill =
+    "rounded-md px-1.5 py-[2px] text-[12px] font-semibold " +
+    "bg-white/90 text-gray-900 ring-1 ring-gray-300 shadow-sm " +
+    "dark:bg-zinc-900/85 dark:text-zinc-50 dark:ring-zinc-700";
+  return (
+    <div className={`mt-1.5 flex justify-between ${className}`}>
+      <span className={pill}>1</span>
+      <span className={pill}>5</span>
+      <span className={pill}>10</span>
     </div>
   );
 }
@@ -1220,6 +1351,7 @@ function ActiveVoting({
   /* ---------- Sub-components ---------- */
 
   // Pill “Picked by” unificata
+  
   function PickedByPill({ name }: { name: string }) {
     const avatar = loadAvatarFor(name);
     const initial = name?.[0]?.toUpperCase() || "?";
@@ -1881,90 +2013,325 @@ function HistoryCardExtended({
   );
 }
 
-function HistoryCardCompact({
+/** ───────────────────────────────────────────────────────────────────
+ *  Poster grid compatta + Modal dettagli
+ *  ----------------------------------------------------------------- */
+
+function HistoryPosterGrid({
+  items,
+  onOpen,
+  onResolve, // ⬅️ nuovo: chiama updateViewingMovie(id, nextMovie)
+}: {
+  items: any[];
+  onOpen: (v: any) => void;
+  onResolve?: (viewingId: any, nextMovie: any) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+      {items.map((v) => (
+        <PosterCell
+          key={v.id}
+          v={v}
+          onClick={() => onOpen(v)}
+          onResolved={(nextMovie) => onResolve?.(v.id, nextMovie)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Singola cella poster con lazy meta (cache → details → search) */
+function PosterCell({
   v,
-  onEdit,
+  onClick,
+  onResolved,
 }: {
   v: any;
-  onEdit?: (id: any) => void;
+  onClick: () => void;
+  onResolved: (nextMovie: any) => void;
 }) {
-  const ratings = (v.ratings || {}) as Record<string, number>;
-  const scores = Object.values(ratings).map(Number);
+  const [posterPath, setPosterPath] = React.useState<string | undefined>(v?.movie?.poster_path);
 
+  // evita doppie chiamate per lo stesso titolo
+  const inflightRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    let abort = false;
+
+    async function run() {
+      // se già presente, niente da fare
+      if (posterPath) return;
+
+      const title = (v?.movie?.title || "").trim();
+      if (!title) return;
+
+      if (inflightRef.current === title) return;
+      inflightRef.current = title;
+
+      // 1) cache
+      const cache = getMetaCache();
+      const cached = cache[title];
+      if (!abort && cached?.poster_path) {
+        setPosterPath(cached.poster_path);
+        onResolved?.({ ...v.movie, poster_path: cached.poster_path });
+        inflightRef.current = null;
+        return;
+      }
+
+      // 2) TMDB details diretti se ho id
+      let det: any = null;
+      if (v?.movie?.id) {
+        det = await tmdbDetails(v.movie.id);
+      }
+
+      // 3) Search+details per titolo se ancora niente
+      if (!det) {
+        const s = await tmdbSearch(title);
+        const first = s?.[0];
+        if (first?.id) det = await tmdbDetails(first.id);
+      }
+
+      if (!abort && det?.poster_path) {
+        const merged = mergeMovie(v.movie, det);
+        setPosterPath(merged.poster_path);
+
+        // salva in cache leggera per riuso
+        const c = getMetaCache();
+        c[title] = { ...(c[title] || {}), poster_path: merged.poster_path };
+        setMetaCache(c);
+
+        // persisti in history
+        onResolved?.(merged);
+      }
+
+      inflightRef.current = null;
+    }
+
+    run();
+    return () => {
+      abort = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v?.id, v?.movie?.id, v?.movie?.title, posterPath]);
+
+  const poster = posterPath ? posterUrl(posterPath, "w342") : "";
+  const year =
+    v?.movie?.release_year ||
+    (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
+
+  return (
+    <button
+      className="group relative aspect-[2/3] overflow-hidden rounded-xl border bg-white text-left shadow-sm transition
+                 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
+      onClick={onClick}
+      title={v?.movie?.title || "Open details"}
+    >
+      {poster ? (
+        <img
+          src={poster}
+          alt={v?.movie?.title}
+          className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center p-3 text-center text-xs text-gray-500 dark:text-zinc-400">
+          {v?.movie?.title || "Untitled"}
+          {year ? <span className="ml-1 opacity-70">({year})</span> : null}
+        </div>
+      )}
+
+      {/* gradient + titolo in basso */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-2">
+        <div className="line-clamp-2 text-[11px] font-medium text-white/95">
+          {v?.movie?.title}
+          {year ? <span className="opacity-80"> ({year})</span> : null}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+
+/** Modal dettagli: poster + overview + meta + recap voti */
+function ViewingModal({
+  v,
+  onClose,
+  onEdit,
+}: {
+  v: any | null;
+  onClose: () => void;
+  onEdit?: (viewingId: any) => void;
+}) {
+  React.useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && v && onClose();
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [v, onClose]);
+
+  if (!v) return null;
+
+  const ratings = (v.ratings || {}) as Record<string, number>;
+  const entries = Object.entries(ratings) as [string, number][];
+  const scores = entries.map(([, n]) => Number(n));
   const avg =
     scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-
-  const avgHue = (() => {
-    if (avg == null) return 0;
-    const t = Math.max(1, Math.min(10, avg));
-    return ((t - 3) / 8) * 120; // 3→10 mappa su 0..120 (rosso→verde)
-  })();
 
   const releaseYear =
     v?.movie?.release_year ||
     (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
 
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
-      {/* Header compatto */}
-      <div className="flex flex-wrap items-center gap-2">
-        {v.picked_by && (
-          <>
-            <PickedByBadge name={v.picked_by} />
-            <div className="mx-1 text-gray-300">•</div>
-          </>
-        )}
+  const genreLine = Array.isArray(v?.movie?.genres)
+    ? v.movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
+    : "";
 
-        <div className="min-w-0 text-[15px] font-semibold leading-tight">
-          <span className="break-words">{v?.movie?.title || "Untitled"}</span>
-          {releaseYear && (
-            <span className="ml-2 text-gray-500">({releaseYear})</span>
+  const poster = v?.movie?.poster_path ? posterUrl(v.movie.poster_path, "w342") : "";
+  const overview = (v?.movie?.overview || "").trim();
+
+  // Helpers grafici (anello + barra) come nella history
+  const AvgRing = ({ value }: { value: number }) => {
+    const r = 26, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
+    return (
+      <div className="relative h-16 w-16">
+        <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
+          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
+          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-lime-400"
+                  strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}/>
+        </svg>
+        <div className="absolute inset-0 grid place-items-center text-sm font-bold">
+          {formatScore(value)}
+        </div>
+      </div>
+    );
+  };
+  const VotesBar = ({ scores, avg }: { scores: number[]; avg: number | null }) => {
+    const toPct = (n: number) => ((n - 1) / 9) * 100;
+    return (
+      <div className="w-full">
+        <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
+          <span>Avg {scores.length ? `(${scores.length} votes)` : ""}</span>
+          <span>10</span>
+        </div>
+        <div className="relative h-4 w-full overflow-hidden rounded-full bg-zinc-800">
+          {avg !== null && (
+            <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
+                 style={{ width: `${toPct(avg)}%` }} />
           )}
+          {scores.map((s, i) => (
+            <div key={i}
+                 className="pointer-events-none absolute top-1/2 h-6 w-[2px] -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_2px_rgba(0,0,0,0.6)]"
+                 style={{ left: `calc(${toPct(s)}% - 1px)` }}
+                 title={formatScore(s)} />
+          ))}
+        </div>
+        <div className="mt-1 flex justify-between text-[11px] text-zinc-500">
+          <span>1</span><span>5</span><span>10</span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-4xl overflow-hidden rounded-2xl border bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 border-b p-4 dark:border-zinc-800">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              {v.picked_by && <PickedByBadge name={v.picked_by} />}
+              <h3 className="text-lg font-semibold leading-tight">
+                <span className="break-words">{v?.movie?.title || "Untitled"}</span>
+                {releaseYear && <span className="ml-2 text-gray-500">({releaseYear})</span>}
+              </h3>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
+              {Number(v?.movie?.runtime) > 0 && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {v.movie.runtime} min</span>}
+              {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
+              {typeof v?.movie?.imdb_rating === "number" ? (
+                <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(v.movie.imdb_rating)}</span>
+              ) : typeof v?.movie?.tmdb_vote_average === "number" ? (
+                <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(v.movie.tmdb_vote_average)}</span>
+              ) : null}
+              {typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0 && (
+                <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                  {v.movie.tmdb_vote_count.toLocaleString()} votes
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {onEdit && (
+              <button
+                className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"
+                onClick={() => onEdit(v.id)}
+              >
+                Edit
+              </button>
+            )}
+            <button className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700" onClick={onClose}>
+              Close
+            </button>
+          </div>
         </div>
 
-        {onEdit && (
-          <button
-            className="ml-2 rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700"
-            onClick={() => onEdit(v.id)}
-            title="Edit movie"
-          >
-            Edit
-          </button>
-        )}
-      </div>
-
-      {/* Avg + votanti */}
-      <div className="mt-3 flex flex-wrap items-center gap-3">
-        {avg !== null && (
-          <div
-            className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
-            style={{
-              background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
-            }}
-            aria-label={`Average ${formatScore(avg)}`}
-            title={`Average ${formatScore(avg)}`}
-          >
-            <span className="leading-none">★</span>
-            <span>Avg {formatScore(avg)}</span>
-            <span className="ml-1 text-xs opacity-85">({scores.length})</span>
+        {/* Body */}
+        <div className="grid gap-4 p-4 md:grid-cols-[200px,1fr]">
+          <div className="flex items-start justify-center">
+            {poster ? (
+              <img
+                src={poster}
+                alt={v?.movie?.title}
+                className="h-[300px] w-[200px] rounded-xl border object-cover dark:border-zinc-700"
+              />
+            ) : (
+              <div className="flex h-[300px] w-[200px] items-center justify-center rounded-xl border text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+                No poster
+              </div>
+            )}
           </div>
-        )}
 
-        {/* Chip dei votanti con icona/avatar */}
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(ratings)
-            .sort(
-              (a, b) =>
-                Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0])
-            )
-            .map(([name, score]) => (
-              <VoterChip key={name} name={name} score={Number(score)} />
-            ))}
+          <div className="min-w-0">
+            {overview && (
+              <p className="mb-3 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
+                {overview}
+              </p>
+            )}
+
+            <div className="mb-3 flex items-center gap-6">
+              {avg !== null && <AvgRing value={avg} />}
+              <div className="flex-1">
+                <VotesBar scores={scores} avg={avg} />
+              </div>
+            </div>
+
+            {entries.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {entries
+                  .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
+                  .map(([name, score]) => (
+                    <span
+                      key={name}
+                      className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs shadow-sm
+                                 border-gray-200 bg-white dark:border-zinc-700 dark:bg-zinc-900"
+                      title={`${name}: ${formatScore(score)}`}
+                    >
+                      <span className="inline-block h-2 w-2 rounded-full bg-lime-400" />
+                      <span className="truncate max-w-[9rem]">{name}</span>
+                      <b className="tabular-nums">{formatScore(score)}</b>
+                    </span>
+                  ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
+
 
 function HistoryFilters({
   pickers,
@@ -2528,7 +2895,8 @@ export default function CinemaNightApp() {
 
   const [user, setUser] = useState<string>("");
   const [tab, setTab] = useState<"vote" | "history" | "profile" | "stats">("vote");
-const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } | null>(null);
+  const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } | null>(null);
+  const [openViewing, setOpenViewing] = useState<any | null>(null);
 
   const [pickedMovie, setPickedMovie] = useState<any | null>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -3180,75 +3548,85 @@ useEffect(() => {
                 })()}
 
                 {/* ── Results ─────────────────────────────────────────────────── */}
-                <div className="mt-4 grid gap-3">
-                  {history.length === 0 && (
-                    <div className="text-sm text-gray-600 dark:text-zinc-400">
-                      No entries yet. Start a vote from the “Vote” tab.
-                    </div>
-                  )}
+<div className="mt-4 grid gap-3">
+  {history.length === 0 && (
+    <div className="text-sm text-gray-600 dark:text-zinc-400">
+      No entries yet. Start a vote from the “Vote” tab.
+    </div>
+  )}
 
-                  {(() => {
-                    let L = history.slice();
-                    if (filterPicker) L = L.filter((h) => h?.picked_by === filterPicker);
-                    if (filterGenre) {
-                      L = L.filter((h) =>
-                        ((h?.movie?.genres as Array<{ name: string }>) || []).some(
-                          (g) => g?.name === filterGenre
-                        )
-                      );
-                    }
+  {(() => {
+    let L = history.slice();
+    if (filterPicker) L = L.filter((h) => h?.picked_by === filterPicker);
+    if (filterGenre) {
+      L = L.filter((h) =>
+        ((h?.movie?.genres as Array<{ name: string }>) || []).some(
+          (g) => g?.name === filterGenre
+        )
+      );
+    }
 
-                    const getAvg = (r?: Record<string, number> | null) => {
-                      if (!r) return null;
-                      const vals = Object.values(r).map(Number);
-                      if (!vals.length) return null;
-                      return vals.reduce((a, b) => a + b, 0) / vals.length;
-                    };
+    const getAvg = (r?: Record<string, number> | null) => {
+      if (!r) return null;
+      const vals = Object.values(r).map(Number);
+      if (!vals.length) return null;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    };
 
-                    L.sort((a, b) => {
-                      const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
-                      const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
-                      const aAvg = getAvg(a?.ratings);
-                      const bAvg = getAvg(b?.ratings);
-                      const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
-                      const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
+    L.sort((a, b) => {
+      const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
+      const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
+      const aAvg = getAvg(a?.ratings);
+      const bAvg = getAvg(b?.ratings);
+      const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
+      const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
 
-                      switch (sortKey) {
-                        case "date-asc":
-                          return aDate - bDate;
-                        case "date-desc":
-                          return bDate - aDate;
-                        case "avg-asc":
-                          return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
-                        case "avg-desc":
-                          return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
-                        case "votes-asc":
-                          return aVotes - bVotes;
-                        case "votes-desc":
-                          return bVotes - aVotes;
-                        default:
-                          return 0;
-                      }
-                    });
+      switch (sortKey) {
+        case "date-asc":
+          return aDate - bDate;
+        case "date-desc":
+          return bDate - aDate;
+        case "avg-asc":
+          return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
+        case "avg-desc":
+          return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
+        case "votes-asc":
+          return aVotes - bVotes;
+        case "votes-desc":
+          return bVotes - aVotes;
+        default:
+          return 0;
+      }
+    });
 
-                    return L.map((v) =>
-                        historyMode === "extended" ? (
-                          <HistoryCardExtended
-                            key={v.id}
-                            v={v}
-                            onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
-                            onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)} // salva + persist
-                          />
-                        ) : (
-                          <HistoryCardCompact
-                            key={v.id}
-                            v={v}
-                            onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
-                          />
-                        )
-                      );
-                  })()}
-                </div>
+    return historyMode === "compact" ? (
+      <>
+          <HistoryPosterGrid
+            items={L}
+            onOpen={setOpenViewing}
+            onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+          />        <ViewingModal
+          v={openViewing}
+          onClose={() => setOpenViewing(null)}
+          onEdit={(id) => {
+            setEditingViewing({ id, title: L.find((x) => x.id === id)?.movie?.title || "" });
+            setOpenViewing(null);
+          }}
+        />
+      </>
+    ) : (
+      L.map((v) => (
+        <HistoryCardExtended
+          key={v.id}
+          v={v}
+          onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
+          onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+        />
+      ))
+    );
+  })()}
+</div>
+
               </Card>
             </div>
           )}
