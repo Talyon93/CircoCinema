@@ -40,8 +40,11 @@ const SB_ROW_ID = "singleton" as const; // una sola riga condivisa
 
 // ===== Shared state su Supabase (con fallback locale) =====
 // ===== Supabase Storage (JSON history) =====
+// ===== Supabase Storage (JSON history) =====
 const STORAGE_BUCKET = "circo";
-const STORAGE_HISTORY_KEY = "history.json";
+const STORAGE_BASE_HISTORY_KEY = "history.json";       // seed, sola lettura
+const STORAGE_LIVE_HISTORY_KEY = "history_live.json";  // file “vivo” dove scriviamo
+
 
 
 async function loadHistoryFromStorage(): Promise<any[] | null> {
@@ -56,6 +59,61 @@ async function loadHistoryFromStorage(): Promise<any[] | null> {
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+async function downloadJSONFromStorage(key: string): Promise<any[] | null> {
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.storage.from(STORAGE_BUCKET).download(key);
+    if (error || !data) return null;
+    const text = await data.text();
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Carica prima il LIVE, se non esiste torna il BASE */
+async function loadHistoryFromStoragePreferLive(): Promise<{ list: any[]; source: "live" | "base" | null }> {
+  if (!sb) return { list: [], source: null };
+  const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
+  if (Array.isArray(live)) return { list: live, source: "live" };
+  const base = await downloadJSONFromStorage(STORAGE_BASE_HISTORY_KEY);
+  if (Array.isArray(base)) return { list: base, source: "base" };
+  return { list: [], source: null };
+}
+
+/** Scrive SOLO il LIVE (non tocca il BASE) */
+async function saveLiveHistoryToStorage(list: any[]): Promise<{ error: any | null }> {
+  if (!sb) return { error: null };
+  try {
+    const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
+    const { error } = await sb.storage
+      .from(STORAGE_BUCKET)
+      .upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true, contentType: "application/json" });
+    if (error) {
+      console.error("[saveLiveHistoryToStorage] upload error:", error);
+      return { error };
+    }
+    return { error: null };
+  } catch (e) {
+    console.error("[saveLiveHistoryToStorage] exception:", e);
+    return { error: e };
+  }
+}
+
+/** Se non esiste ancora il LIVE, crealo copiando il seed BASE */
+async function ensureLiveFileExists(seedList: any[]) {
+  if (!sb) return;
+  const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
+  if (!Array.isArray(live)) {
+    const { error } = await saveLiveHistoryToStorage(seedList);
+    if (!error) {
+      // opzionale ma utile per coerenza realtime
+      await saveSharedState({ history: seedList });
+    }
   }
 }
 
@@ -78,17 +136,17 @@ async function saveHistoryToStorage(list: any[]): Promise<{ error: any | null }>
 }
 
 async function persistHistory(list: any[]) {
-  // Update ottimistico UI già fatto a monte (setHistory(list))
+  // Update ottimistico già fatto a monte (setHistory(list))
   if (!sb) {
     lsSetJSON(K_VIEWINGS, list);
     return;
   }
 
-  // 1) Storage: sovrascrivi /circo/history.json
-  const { error: upErr } = await saveHistoryToStorage(list);
+  // 1) Scrivi SOLO sul LIVE
+  const { error: upErr } = await saveLiveHistoryToStorage(list);
 
-  // 2) Tabella cn_state: serve per realtime + fallback lettura
-  const { error: stErr } = await saveSharedState({ history: list });
+  // 2) Aggiorna cn_state per realtime + fallback
+  const { error: stErr } = await saveSharedState({});
 
   if (upErr || stErr) {
     console.error("[persistHistory] errors", { upErr, stErr });
@@ -96,14 +154,12 @@ async function persistHistory(list: any[]) {
     return;
   }
 
-  // 3) (Facoltativo ma utile) Verifica round-trip dal file su Storage:
-  const roundTrip = await loadHistoryFromStorage();
+  // 3) Round-trip dal LIVE
+  const roundTrip = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
   if (!Array.isArray(roundTrip) || roundTrip.length !== list.length) {
     console.warn("[persistHistory] roundTrip mismatch", { roundTripLen: roundTrip?.length, expected: list.length });
   }
 }
-
-
 
 type SharedState = {
   id: string;
@@ -134,10 +190,15 @@ async function loadSharedState(): Promise<SharedState> {
 }
 
 async function saveSharedState(partial: Partial<SharedState>) {
+  // helper: mirror su localStorage per tab sync locale
+  const writeLocal = (s: Partial<SharedState>) => {
+    if (s.history) lsSetJSON(K_VIEWINGS, s.history);
+    if ("active" in s) lsSetJSON(K_ACTIVE_VOTE, s.active ?? null);
+    if (s.ratings) lsSetJSON(K_ACTIVE_RATINGS, s.ratings);
+  };
+
   if (!sb) {
-    if (partial.history) lsSetJSON(K_VIEWINGS, partial.history);
-    if (partial.active !== undefined) lsSetJSON(K_ACTIVE_VOTE, partial.active);
-    if (partial.ratings) lsSetJSON(K_ACTIVE_RATINGS, partial.ratings);
+    writeLocal(partial);
     return { error: null as any };
   }
 
@@ -155,28 +216,78 @@ async function saveSharedState(partial: Partial<SharedState>) {
     console.error("[saveSharedState] upsert error:", error);
     return { error };
   }
+
+  // write-through locale per test in locale + resilienza
+  writeLocal(next);
   return { error: null as any };
 }
 
 function subscribeSharedState(onChange: (s: SharedState) => void) {
   if (!sb) return () => {};
-  const channel = sb
-    .channel("cn_state_realtime")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "cn_state", filter: `id=eq.${SB_ROW_ID}` },
-      (payload: any) => {
-        const row = payload?.new as SharedState;
-        if (row) onChange(row);
+
+  // canale con nome unico (evita collisioni in hot reload)
+  const ch = sb.channel(`cn_state_realtime_${Math.random().toString(36).slice(2)}`);
+
+  const handle = async (payload: any) => {
+    const id = payload?.new?.id ?? payload?.old?.id;
+    if (id !== SB_ROW_ID) return; // filtra lato client
+
+    // ✅ read-after-notify: ricarica lo stato canonico
+    const { data, error } = await sb
+      .from("cn_state")
+      .select("*")
+      .eq("id", SB_ROW_ID)
+      .single();
+
+    if (!error && data) {
+      onChange(data as SharedState);
+    } else {
+      console.warn("[RT READBACK] error", error);
+    }
+  };
+
+  ch.on("postgres_changes", { event: "INSERT", schema: "public", table: "cn_state" }, handle)
+    .on("postgres_changes", { event: "UPDATE", schema: "public", table: "cn_state" }, handle)
+    .on("postgres_changes", { event: "DELETE", schema: "public", table: "cn_state" }, handle)
+    .subscribe((status) => {
+      console.log("[RT STATUS]", status);
+      // 🔁 autoripartenza in caso di problemi
+      if (status === "TIMED_OUT" || status === "CHANNEL_ERROR" || status === "CLOSED") {
+        setTimeout(() => ch.subscribe(), 500);
       }
-    )
-    .subscribe();
-  return () => sb.removeChannel(channel);
+    });
+
+  return () => sb.removeChannel(ch);
 }
+
 
 // ============================
 // Helpers
 // ============================
+
+async function setRatingAtomic(user: string, score: number) {
+  if (!sb) {
+    const cur = lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {});
+    cur[user] = score;
+    lsSetJSON(K_ACTIVE_RATINGS, cur);
+    return;
+  }
+
+  const { error } = await sb.rpc("cn_set_rating", {
+    _id: SB_ROW_ID,
+    _user: user,
+    _score: score,
+  });
+
+  if (error) {
+    console.warn("[setRatingAtomic] RPC failed, fallback to upsert:", error);
+    // fallback: leggo lo stato e scrivo il merge via upsert (meno atomico, ma funziona)
+    const cur = (await loadSharedState())?.ratings || {};
+    cur[user] = score;
+    await saveSharedState({ ratings: cur });
+  }
+}
+
 
 /** Ritorna movie con `runtime` valorizzato (se lo trova su TMDB). */
 async function ensureRuntime(movie: any): Promise<any> {
@@ -618,113 +729,133 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
 }
 
 function EditMovieDialog({
-    open,
-    initialTitle = "",
-    onClose,
-    onSelect,
-  }: {
-    open: boolean;
-    initialTitle?: string;
-    onClose: () => void;
-    onSelect: (movie: any) => void;
-  }) {
-    const [q, setQ] = useState(initialTitle);
-    const [loading, setLoading] = useState(false);
-    const [results, setResults] = useState<any[]>([]);
-    const [err, setErr] = useState<string | null>(null);
-  
-    useEffect(() => {
-      setQ(initialTitle);
-      setResults([]);
-      setErr(null);
-    }, [initialTitle]);
-  
-    if (!open) return null;
-  
-    const search = async () => {
-      setErr(null);
-      setLoading(true);
-      try {
-        const res = await tmdbSearch(q);
-        setResults(res.slice(0, 12));
-      } catch (e: any) {
-        setErr(e?.message || "Search error");
-      } finally {
-        setLoading(false);
-      }
-    };
-  
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-        <div className="w-full max-w-2xl rounded-2xl border bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-lg font-semibold">Edit movie</h3>
+  open,
+  initialTitle = "",
+  onClose,
+  onSelect,
+  onDelete,
+}: {
+  open: boolean;
+  initialTitle?: string;
+  onClose: () => void;
+  onSelect: (movie: any) => void;
+  onDelete: () => void; // 👈 nuovo
+}) {
+  const [q, setQ] = useState(initialTitle);
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<any[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setQ(initialTitle);
+    setResults([]);
+    setErr(null);
+  }, [initialTitle]);
+
+  if (!open) return null;
+
+  const search = async () => {
+    setErr(null);
+    setLoading(true);
+    try {
+      const res = await tmdbSearch(q);
+      setResults(res.slice(0, 12));
+    } catch (e: any) {
+      setErr(e?.message || "Search error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmDelete = () => {
+    const title = q?.trim() || initialTitle || "this entry";
+    if (confirm(`Eliminare definitivamente "${title}"? L'azione non è reversibile.`)) {
+      onDelete();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-2xl rounded-2xl border bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="text-lg font-semibold">Edit movie</h3>
+          <div className="flex items-center gap-2">
+            {/* Delete entry */}
+            <button
+              className="rounded-xl border border-red-200 px-3 py-1 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+              onClick={confirmDelete}
+              title="Delete this entry"
+            >
+              Delete entry
+            </button>
             <button className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700" onClick={onClose}>
               Close
             </button>
           </div>
-  
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <label className="text-xs text-gray-600 dark:text-zinc-400">Search on TMDB</label>
-              <input
-                className="w-full rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-                placeholder="e.g. Lucky Number Slevin"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && search()}
-                autoFocus
-              />
-            </div>
-            <button
-              onClick={search}
-              className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
-              disabled={!q || loading}
-            >
-              {loading ? "..." : "Search"}
-            </button>
+        </div>
+
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <label className="text-xs text-gray-600 dark:text-zinc-400">Search on TMDB</label>
+            <input
+              className="w-full rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+              placeholder="e.g. Lucky Number Slevin"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && search()}
+              autoFocus
+            />
           </div>
-  
-          {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
-  
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {results.map((r) => (
-              <div
-                key={r.id}
-                className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50 dark:hover:bg-zinc-800 border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-                onClick={() => onSelect(r)}
-                title="Use this movie"
-              >
-                {r.poster_path && (
-                  <img
-                    src={posterUrl(r.poster_path, "w185")}
-                    alt={r.title}
-                    className="h-24 w-16 rounded-lg object-cover"
-                  />
-                )}
-                <div className="flex-1">
-                  <div className="font-semibold">
-                    {r.title}{" "}
-                    {r.release_date ? (
-                      <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span>
-                    ) : null}
-                  </div>
-                  <div className="line-clamp-3 text-sm text-gray-700 dark:text-zinc-300">
-                    {r.overview}
-                  </div>
+          <button
+            onClick={search}
+            className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
+            disabled={!q || loading}
+          >
+            {loading ? "..." : "Search"}
+          </button>
+        </div>
+
+        {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {results.map((r) => (
+            <div
+              key={r.id}
+              className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50 dark:hover:bg-zinc-800 border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+              onClick={() => onSelect(r)}
+              title="Use this movie"
+            >
+              {r.poster_path && (
+                <img
+                  src={posterUrl(r.poster_path, "w185")}
+                  alt={r.title}
+                  className="h-24 w-16 rounded-lg object-cover"
+                />
+              )}
+              <div className="flex-1">
+                <div className="font-semibold">
+                  {r.title}{" "}
+                  {r.release_date ? (
+                    <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span>
+                  ) : null}
+                </div>
+                <div className="line-clamp-3 text-sm text-gray-700 dark:text-zinc-300">
+                  {r.overview}
                 </div>
               </div>
-            ))}
-            {!loading && results.length === 0 && (
-              <div className="rounded-xl border p-3 text-sm text-gray-600 dark:border-zinc-700 dark:text-zinc-400">
-                No results yet — search something above.
-              </div>
-            )}
-          </div>
+            </div>
+          ))}
+          {!loading && results.length === 0 && (
+            <div className="rounded-xl border p-3 text-sm text-gray-600 dark:border-zinc-700 dark:text-zinc-400">
+              No results yet — search something above.
+            </div>
+          )}
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
   
 
 function RatingBar({ value, onChange }: { value: number; onChange: (v: number) => void }) {
@@ -1423,18 +1554,18 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
                     importHistoryFromFile(f, async (list) => {
                       try {
                         if (sb) {
-                          // 1) salva file su Storage (fonte di verità)
-                          const { error: upErr } = await saveHistoryToStorage(list);
-                          // 2) aggiorna anche cn_state (per realtime e coerenza)
-                          const { error: stErr } = await saveSharedState({ history: list /*, active: null, ratings: {}*/ });
+                          // 1) scrivi SOLO il LIVE
+                          const { error: upErr } = await saveLiveHistoryToStorage(list);
+                          // 2) aggiorna anche cn_state (realtime)
+                          const { error: stErr } = await saveSharedState({});
 
-                          // 3) update ottimistico
+                          // 3) update ottimistico UI
                           setHistory(list);
 
                           if (upErr || stErr) {
-                            alert("Import completato con avvisi (vedi console per dettagli).");
+                            alert("Import completato con avvisi (vedi console).");
                           } else {
-                            alert(`Import OK: ${list.length} voci salvate su Storage + Supabase`);
+                            alert(`Import OK: ${list.length} voci salvate su history_live.json + cn_state`);
                           }
                         } else {
                           lsSetJSON(K_VIEWINGS, list);
@@ -1447,6 +1578,7 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
                     });
                   }}
                 />
+
               </label>
               {avatar && (
                 <button className="rounded-xl border px-3 py-2 text-sm dark:border-zinc-700" onClick={clearAvatar}>
@@ -1590,7 +1722,7 @@ function Stats({
           : "—";
   
     const LoadingRow = () => (
-      <div className="rounded-xl border px-3 py-2 text-sm text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+      <div className="rounded-xl border px-3 py-2 text-sm text-gray-500 dark:border-zinc-700 etdark:text-zinc-400">
         <span className="animate-pulse">Loading…</span>
       </div>
     );
@@ -1996,76 +2128,95 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [history, user]);
 
-  // Init + realtime (Supabase) + seed fallback
-  useEffect(() => {
+// Init + realtime (Supabase) + seed fallback
+useEffect(() => {
   let off = () => {};
 
   (async () => {
+    // ripristina utente
     setUser(lsGetJSON<string | null>(K_USER, "") || "");
 
     if (sb) {
-      // 1) prova JSON su Storage
-      let hist: any[] | null = await loadHistoryFromStorage();
+      const [{ list: storageList, source }, shared] = await Promise.all([
+        loadHistoryFromStoragePreferLive(),
+        loadSharedState(),
+      ]);
 
-      // 2) se non esiste/errore, cade su cn_state
-      if (!hist) {
-        const s = await loadSharedState();
-        hist = s.history || [];
-        setActiveVote(s.active || null);
-        setActiveRatings(s.ratings || {});
+      // 1) scegli la fonte iniziale
+      let initial: any[] = Array.isArray(storageList) ? storageList : [];
+      let used: "live" | "base" | "cn_state" | null = source ?? null;
+
+      // fallback a cn_state se Storage è vuoto
+      if (initial.length === 0 && Array.isArray(shared?.history) && shared.history.length > 0) {
+        initial = shared.history;
+        used = "cn_state";
+        try {
+          await ensureLiveFileExists(initial);     // crea history_live.json se manca
+          await saveLiveHistoryToStorage(initial); // mantieni in sync il LIVE
+        } catch (e) {
+          console.warn("[init] ensure/sync live failed:", e);
+        }
       }
 
-      setHistory(hist || []);
+      // 2) applica stato iniziale
+      setHistory(initial);
+      setActiveVote(shared?.active ?? null);
+      setActiveRatings(shared?.ratings ?? {});
 
-      // realtime su cn_state (così se qualcuno salva da altro client, aggiorni)
-      off = subscribeSharedState((row) => {
-        setHistory(row.history || []);
-        setActiveVote(row.active || null);
-        setActiveRatings(row.ratings || {});
-      });
-    } else {
-      // Fallback locale invariato
-      let hist = lsGetJSON<any[]>(K_VIEWINGS, []);
+      console.log("[init] history source:", used, "len:", initial.length);
+
+      // 3) realtime cn_state
+      off = subscribeSharedState(async (row) => {
+      try {
+        const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
+        if (Array.isArray(live)) setHistory(live);
+      } catch (e) {
+        console.warn("[realtime] reload live history failed:", e);
+      }
+      setActiveVote(row?.active ?? null);
+      setActiveRatings(row?.ratings ?? {});
+    });
+
+      return; // niente fallback locale se c'è Supabase
+    }
+
+    // ------- Fallback locale -------
+    let hist = lsGetJSON<any[]>(K_VIEWINGS, []);
+    if (hist.length === 0) {
+      try {
+        // @ts-ignore
+        const mod = await import("./seed");
+        if (Array.isArray(mod?.CIRCO_SEED) && mod.CIRCO_SEED.length) {
+          hist = mod.CIRCO_SEED as any[];
+        }
+      } catch {}
       if (hist.length === 0) {
         try {
-          // @ts-ignore
-          const mod = await import("./seed");
-          if (Array.isArray(mod?.CIRCO_SEED) && mod.CIRCO_SEED.length) hist = mod.CIRCO_SEED as any[];
+          const res = await fetch("/circo_seed.json");
+          if (res.ok) {
+            const arr = await res.json();
+            if (Array.isArray(arr) && arr.length) hist = arr;
+          }
         } catch {}
-        if (hist.length === 0) {
-          try {
-            const res = await fetch("/circo_seed.json");
-            if (res.ok) {
-              const arr = await res.json();
-              if (Array.isArray(arr) && arr.length) hist = arr;
-            }
-          } catch {}
-        }
-        if (hist.length > 0) {
-          hist = hist.slice().reverse();
-          lsSetJSON(K_VIEWINGS, hist);
-        }
       }
-      setHistory(hist);
-      setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
-      setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
-
-      const onStorage = (e: StorageEvent) => {
-        if (e.key === K_ACTIVE_VOTE) setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
-        if (e.key === K_ACTIVE_RATINGS) setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
-        if (e.key === K_VIEWINGS) setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
-        if (e.key === K_THEME) {
-          const t = (localStorage.getItem(K_THEME) as Theme) || "dark";
-          applyTheme(t);
-        }
-      };
-      window.addEventListener("storage", onStorage);
-      const prevOff = off;
-      off = () => {
-        window.removeEventListener("storage", onStorage);
-        prevOff();
-      };
+      if (hist.length > 0) {
+        hist = hist.slice().reverse();
+        lsSetJSON(K_VIEWINGS, hist);
+      }
     }
+
+    setHistory(hist);
+    setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
+    setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === K_ACTIVE_VOTE) setActiveVote(lsGetJSON<any | null>(K_ACTIVE_VOTE, null));
+      if (e.key === K_ACTIVE_RATINGS) setActiveRatings(lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}));
+      if (e.key === K_VIEWINGS) setHistory(lsGetJSON<any[]>(K_VIEWINGS, []));
+      if (e.key === K_THEME) applyTheme(((localStorage.getItem(K_THEME) as Theme) || "dark") as Theme);
+    };
+    window.addEventListener("storage", onStorage);
+    off = () => window.removeEventListener("storage", onStorage);
   })();
 
   return () => off();
@@ -2107,6 +2258,17 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [history.length, isBackfillingRuntime]);
     
+    async function deleteViewing(viewingId: any) {
+      try {
+        const nextList = history.filter((v) => v.id !== viewingId);
+        setHistory(nextList);           // UI subito
+        await persistHistory(nextList); // salva su Storage + cn_state (o locale)
+      } catch (e) {
+        console.error("[deleteViewing] failed:", e);
+        alert("Errore durante l'eliminazione.");
+      }
+    }
+
     async function updateViewingMovie(viewingId: any, nextMovie: any) {
     try {
       const nextList = history.map(v => v.id === viewingId ? { ...v, movie: nextMovie } : v);
@@ -2163,42 +2325,54 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
   
 
   const sendVote = async (score: number) => {
-    if (!user || !activeVote) return;
-    const next = { ...activeRatings, [user]: roundToQuarter(score) };
-    setActiveRatings(next);
-  
-    if (sb) {
-      await saveSharedState({ ratings: next });
-    } else {
-      lsSetJSON(K_ACTIVE_RATINGS, next);
-    }
-  };
+  if (!user || !activeVote) return;
+  const fixed = roundToQuarter(score);
+
+  // UI ottimistica
+  setActiveRatings((prev) => ({ ...prev, [user]: fixed }));
+
+  if (sb) {
+    await setRatingAtomic(user, fixed); // 👈 merge atomico lato DB
+  } else {
+    const next = { ...lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}), [user]: fixed };
+    lsSetJSON(K_ACTIVE_RATINGS, next);
+  }
+};
 
   const endVoting = async () => {
-    if (!activeVote) return;
-    const entry = {
-      id: activeVote.id,
-      started_at: activeVote.started_at,
-      picked_by: activeVote.picked_by,
-      movie: activeVote.movie,
-      ratings: activeRatings,
-    };
-  
-    const nextHistory = [entry, ...history];
-    setHistory(nextHistory);
-    setActiveVote(null);
-    setActiveRatings({});
-  
-    if (sb) {
-      await saveSharedState({ history: nextHistory, active: null, ratings: {} });
-    } else {
-      const L = lsGetJSON<any[]>(K_VIEWINGS, []);
-      L.unshift(entry);
-      lsSetJSON(K_VIEWINGS, L);
-      localStorage.removeItem(K_ACTIVE_VOTE);
-      localStorage.removeItem(K_ACTIVE_RATINGS);
-    }
+  if (!activeVote) return;
+
+  const entry = {
+    id: activeVote.id,
+    started_at: activeVote.started_at,
+    picked_by: activeVote.picked_by,
+    movie: activeVote.movie,
+    ratings: activeRatings,
   };
+
+  const nextHistory = [entry, ...history];
+
+  // UI subito
+  setHistory(nextHistory);
+  setActiveVote(null);
+  setActiveRatings({});
+
+  if (sb) {
+    // Scrivi la history su Storage + cn_state (così anche chi entra dopo la vede)
+    await persistHistory(nextHistory);
+    // Azzera lo stato attivo per tutti
+    await saveSharedState({ active: null, ratings: {} });
+  } else {
+    // fallback locale
+    const L = lsGetJSON<any[]>(K_VIEWINGS, []);
+    L.unshift(entry);
+    lsSetJSON(K_VIEWINGS, L);
+    localStorage.removeItem(K_ACTIVE_VOTE);
+    localStorage.removeItem(K_ACTIVE_RATINGS);
+  }
+};
+
+
   
   return (
     <div className="min-h-screen bg-gray-50 p-4 text-gray-900 dark:bg-zinc-950 dark:text-zinc-100">
@@ -2270,18 +2444,22 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
 
 
            {editingViewing && (
-                <EditMovieDialog
-                    open
-                    initialTitle={editingViewing.title}
-                    onClose={() => setEditingViewing(null)}
-                    onSelect={async (tmdbMovie) => {
-                    const det = await tmdbDetails(tmdbMovie.id);
-                    const enriched = await ensureGenres(det || tmdbMovie);
-                    await  updateViewingMovie(editingViewing.id, enriched);
-                    setEditingViewing(null);
-                    }}
-                />
-                )}
+              <EditMovieDialog
+                open
+                initialTitle={editingViewing.title}
+                onClose={() => setEditingViewing(null)}
+                onSelect={async (tmdbMovie) => {
+                  const det = await tmdbDetails(tmdbMovie.id);
+                  const enriched = await ensureGenres(det || tmdbMovie);
+                  await updateViewingMovie(editingViewing.id, enriched);
+                  setEditingViewing(null);
+                }}
+                onDelete={async () => {
+                  await deleteViewing(editingViewing.id);
+                  setEditingViewing(null);
+                }}
+              />
+            )}
                 {/* ── Filters + Sort ───────────────────────────────────────────── */}
                 {(() => {
                   const pickerOptions = Array.from(
