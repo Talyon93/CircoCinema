@@ -943,9 +943,61 @@ function Avatar({ name }: { name: string }) {
   return <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold">{initials || "?"}</div>;
 }
 
-// ============================
-// ActiveVoting (uguale a prima, con fallback "scores" locale)
-// ============================
+
+/* ===========================
+ *  ACTIVE VOTING (con lazy meta fetch)
+ * =========================== */
+// ============== Mini componenti interni ==============
+const ClapperIcon: React.FC<{ className?: string }> = ({ className = "" }) => (
+  <svg viewBox="0 0 24 24" className={`h-4 w-4 ${className}`} fill="currentColor" aria-hidden="true">
+    <path d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Zm18-2v2H3V6a2 2 0 0 1 2-2h2l2 2h3l-2-2h3l2 2h3l-2-2h3a2 2 0 0 1 2 2Z"/>
+  </svg>
+);
+
+function PickerBadge({ name }: { name?: string }) {
+  if (!name) return null;
+  const avatar = loadAvatarFor(name);
+  const initial = name?.[0]?.toUpperCase() || "?";
+  return (
+    <span
+      className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-1.5 text-amber-200 shadow-sm backdrop-blur ring-1 ring-amber-400/20"
+      title={`Picked by: ${name}`}
+    >
+      <ClapperIcon className="text-amber-300" />
+      {avatar ? (
+        <img
+          src={avatar}
+          alt={name}
+          className="h-5 w-5 rounded-full object-cover ring-2 ring-amber-400/50"
+        />
+      ) : (
+        <span className="grid h-5 w-5 place-items-center rounded-full bg-amber-500/20 text-[10px] font-bold text-amber-100 ring-2 ring-amber-400/50">
+          {initial}
+        </span>
+      )}
+      <span className="text-xs font-semibold">Picked by</span>
+      <span className="text-xs font-bold">{name}</span>
+    </span>
+  );
+}
+
+function AvatarInline({ name }: { name: string }) {
+  const avatar = loadAvatarFor(name);
+  const initials = name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase())
+    .join("");
+  if (avatar) return <img src={avatar} className="h-8 w-8 rounded-full object-cover" alt={name} />;
+  return (
+    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold dark:bg-zinc-800">
+      {initials || "?"}
+    </div>
+  );
+}
+
+// ============== ActiveVoting ==============
 function ActiveVoting({
   movie,
   pickedBy,
@@ -961,17 +1013,16 @@ function ActiveVoting({
   onSendVote: (score: number) => void;
   onEnd: () => void;
 }) {
+  // ---- stato voto utente
   const you = ratings[currentUser];
   const hasVoted = typeof you === "number";
 
   const [openVote, setOpenVote] = React.useState(false);
   const [editMode, setEditMode] = React.useState(false);
   const [temp, setTemp] = React.useState<number>(you ?? 7);
-
   React.useEffect(() => {
     if (typeof you === "number") setTemp(you);
   }, [you]);
-
   const submit = () => {
     const fixed = roundToQuarter(temp);
     onSendVote(fixed);
@@ -979,16 +1030,16 @@ function ActiveVoting({
     setEditMode(false);
   };
 
+  // ---- calcoli
   const entries = Object.entries(ratings) as [string, number][];
-  const sorted = entries.sort((a, b) => {
-    if (a[0] === currentUser) return -1;
-    if (b[0] === currentUser) return 1;
-    if (b[1] !== a[1]) return b[1] - a[1];
-    return a[0].localeCompare(b[0]);
-  });
+  const sorted = entries
+    .slice()
+    .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]));
 
   const scores = entries.map(([, n]) => Number(n));
-  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  const avg = scores.length
+    ? scores.reduce((a, b) => a + b, 0) / scores.length
+    : null;
 
   const releaseYear =
     movie?.release_year ||
@@ -998,107 +1049,213 @@ function ActiveVoting({
     ? movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
     : "";
 
+  // ---- subcomponents (puoi spostarli in alto se già globali)
+  const AvgRing = ({ value }: { value: number }) => {
+    const r = 26;
+    const c = 2 * Math.PI * r;
+    const pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
+    return (
+      <div className="relative h-16 w-16">
+        <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
+          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
+          <circle
+            cx="32"
+            cy="32"
+            r={r}
+            strokeWidth="8"
+            className="fill-none stroke-lime-400"
+            strokeLinecap="round"
+            strokeDasharray={c}
+            strokeDashoffset={c - (pct / 100) * c}
+          />
+        </svg>
+        <div className="absolute inset-0 grid place-items-center text-sm font-bold">
+          {formatScore(value)}
+        </div>
+      </div>
+    );
+  };
+
+  const VotesBar = ({ scores, avg }: { scores: number[]; avg: number | null }) => {
+    const toPct = (n: number) => ((n - 1) / 9) * 100; // 1..10 → 0..100%
+    return (
+      <div className="w-full">
+        <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
+          <span>LIVE AVG{scores.length ? ` (${scores.length})` : ""}</span>
+          <span>10</span>
+        </div>
+        <div className="relative h-4 w-full overflow-hidden rounded-full bg-zinc-800">
+          {avg !== null && (
+            <div
+              className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
+              style={{ width: `${toPct(avg)}%` }}
+            />
+          )}
+          {/* lineette dei votanti */}
+          {scores.map((s, i) => (
+            <div
+              key={i}
+              className="pointer-events-none absolute top-1/2 h-6 w-[2px] -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_2px_rgba(0,0,0,0.6)]"
+              style={{ left: `calc(${toPct(s)}% - 1px)` }}
+              title={formatScore(s)}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const Avatar = ({ name }: { name: string }) => {
+    const initials = name
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((s) => s[0]?.toUpperCase())
+      .join("");
+    const avatar = loadAvatarFor(name);
+    if (avatar)
+      return <img src={avatar} className="h-8 w-8 rounded-full object-cover" alt={name} />;
+    return (
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-white">
+        {initials || "?"}
+      </div>
+    );
+  };
+
+  const VoterChip = ({ name, score }: { name: string; score: number }) => (
+    <div className="flex items-center gap-2 rounded-2xl border border-zinc-700/70 bg-zinc-900/60 px-2.5 py-1 text-sm">
+      <Avatar name={name} />
+      <div className="min-w-0">
+        <div className="truncate text-xs text-zinc-300">
+          {name}{" "}
+          {name === currentUser && (
+            <span className="ml-1 rounded bg-white/10 px-1.5 py-[1px] text-[10px] font-semibold text-white">
+              You
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="ml-2 rounded-full border border-zinc-700/70 px-2 py-0.5 text-xs font-semibold text-zinc-100">
+        {formatScore(score)}
+      </div>
+    </div>
+  );
+
+  const PickedByPill = ({ name }: { name: string }) => {
+    const initials = name?.[0]?.toUpperCase() || "?";
+    const avatar = loadAvatarFor(name);
+    return (
+      <div className="inline-flex items-center gap-2 rounded-[999px] border border-yellow-900/40 bg-amber-900/30 px-3 py-2 text-amber-200 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]">
+        <span className="text-lg">🎞️</span>
+        <span className="text-[13px] leading-none opacity-90">Picked by</span>
+        <span className="inline-flex items-center gap-2">
+          {avatar ? (
+            <img
+              src={avatar}
+              className="h-6 w-6 rounded-full object-cover ring-2 ring-amber-500/40"
+              alt={name}
+            />
+          ) : (
+            <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-800/70 text-[11px] font-bold text-amber-50 ring-2 ring-amber-500/40">
+              {initials}
+            </span>
+          )}
+          <span className="text-[13px] font-semibold text-amber-100">{name}</span>
+        </span>
+      </div>
+    );
+  };
+
   return (
-    <Card className="p-5">
+    <div className="rounded-3xl border border-zinc-800 bg-zinc-950/60 p-5">
+      {/* Header: Picked by pill + titolo */}
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        {pickedBy && <PickedByPill name={pickedBy} />}
+        <h3 className="text-xl font-bold leading-tight text-zinc-100">
+          Voting in progress · {movie?.title}
+          {releaseYear && <span className="ml-2 text-zinc-400">({releaseYear})</span>}
+        </h3>
+      </div>
+
+      {/* Layout poster + info */}
       <div className="flex flex-col gap-5 md:flex-row">
         {movie?.poster_path && (
           <img
             src={posterUrl(movie.poster_path, "w342")}
-            className="h-48 w-32 flex-shrink-0 rounded-xl object-cover"
+            className="h-56 w-40 flex-shrink-0 rounded-xl object-cover ring-1 ring-zinc-800"
             alt={movie?.title}
           />
         )}
 
         <div className="flex-1">
-          <div className="flex items-start gap-4">
-            <div className="flex-1">
-              <div className="text-xl font-bold">
-                Voting in progress · {movie?.title}
-              </div>
-
-              {/* META BADGES */}
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-gray-600 dark:text-zinc-400">
-                {releaseYear && (
-                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                    📅 {releaseYear}
-                  </span>
-                )}
-                {Number(movie?.runtime) > 0 && (
-                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                    ⏱ {movie.runtime} min
-                  </span>
-                )}
-                {genreLine && (
-                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                    {genreLine}
-                  </span>
-                )}
-                {typeof movie?.imdb_rating === "number" ? (
-                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                    ★ IMDb {formatScore(movie.imdb_rating)}
-                  </span>
-                ) : typeof movie?.tmdb_vote_average === "number" ? (
-                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                    ★ TMDB {formatScore(movie.tmdb_vote_average)}
-                  </span>
-                ) : null}
-                {typeof movie?.tmdb_vote_count === "number" && movie.tmdb_vote_count > 0 && (
-                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                    {movie.tmdb_vote_count.toLocaleString()} votes
-                  </span>
-                )}
-              </div>
-
-              {pickedBy && (
-                <div className="mt-2 text-sm">
-                  <span className="rounded-full bg-black px-2 py-1 text-white dark:bg-white dark:text-black">
-                    Picked by: <b>{pickedBy}</b>
-                  </span>
-                </div>
-              )}
-            </div>
+          {/* meta badges */}
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-zinc-300">
+            {Number(movie?.runtime) > 0 && (
+              <span className="rounded-full border border-zinc-700 px-2 py-0.5">⏱ {movie.runtime} min</span>
+            )}
+            {genreLine && (
+              <span className="rounded-full border border-zinc-700 px-2 py-0.5">{genreLine}</span>
+            )}
+            {typeof movie?.imdb_rating === "number" ? (
+              <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                ★ IMDb {formatScore(movie.imdb_rating)}
+              </span>
+            ) : typeof movie?.tmdb_vote_average === "number" ? (
+              <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                ★ TMDB {formatScore(movie.tmdb_vote_average)}
+              </span>
+            ) : null}
+            {typeof movie?.tmdb_vote_count === "number" && movie.tmdb_vote_count > 0 && (
+              <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                {movie.tmdb_vote_count.toLocaleString()} votes
+              </span>
+            )}
           </div>
 
+          {/* descrizione */}
           {movie?.overview && (
-            <p className="mt-2 text-gray-700 dark:text-zinc-300">{movie.overview}</p>
+            <p className="mb-3 text-zinc-300">{movie.overview}</p>
           )}
 
-          <div className="mt-3 flex w-full items-stretch gap-3">
-            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
-              <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Votes</div>
-              <div className="text-2xl font-bold leading-6">{scores.length}</div>
+          {/* Blocchi votazione: ring + bar */}
+          <div className="mt-1 grid gap-3 md:grid-cols-[72px,1fr]">
+            <div className="grid place-items-center">
+              {avg !== null ? <AvgRing value={avg} /> : <div className="text-xs text-zinc-500">No votes</div>}
             </div>
-            <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
-              <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">★ Live avg</div>
-              <div className="text-2xl font-bold leading-6">
-                {avg !== null ? formatScore(avg) : "—"}
-              </div>
-            </div>
+            <VotesBar scores={scores} avg={avg} />
           </div>
 
-          {/* --- Vote area --- */}
-          {!hasVoted ? (
-            <div className="mt-4">
-              {!openVote ? (
+          {/* Stato + azioni voto */}
+          <div className="mt-3">
+            {!hasVoted ? (
+              !openVote ? (
                 <button
-                  className="rounded-xl px-4 py-2 font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                  className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700"
                   onClick={() => setOpenVote(true)}
                 >
                   Vote
                 </button>
               ) : (
-                <div className="mt-2 rounded-2xl border p-3 dark:border-zinc-700">
-                  <div className="mb-2 text-sm">Choose your score</div>
-                  <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
-                  <div className="mt-2 flex gap-2">
+                <div className="mt-2 rounded-2xl border border-zinc-800 p-3">
+                  <div className="mb-2 text-sm text-zinc-300">Choose your score</div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    step={0.25}
+                    value={temp}
+                    onChange={(e) => setTemp(roundToQuarter(parseFloat((e.target as HTMLInputElement).value)))}
+                    className="w-full"
+                  />
+                  <div className="mt-2 flex items-center gap-2">
                     <button
-                      className="rounded-xl px-4 py-2 font-medium bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                      className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700"
                       onClick={submit}
                     >
                       Submit vote
                     </button>
                     <button
-                      className="rounded-xl border px-3 py-2 dark:border-zinc-700"
+                      className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
                       onClick={() => {
                         setOpenVote(false);
                         setTemp(you ?? 7);
@@ -1106,122 +1263,305 @@ function ActiveVoting({
                     >
                       Cancel
                     </button>
+                    <div className="ml-auto text-sm font-semibold text-zinc-200">
+                      {formatScore(temp)}
+                    </div>
                   </div>
                 </div>
-              )}
-            </div>
-          ) : (
-            <>
-              {!editMode ? (
-                <div className="mt-4 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 rounded-2xl border bg-gray-50 p-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
-                    <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
-                    <span>
-                      <b>Vote saved.</b> Please wait for others…
-                    </span>
-                  </div>
+              )
+            ) : !editMode ? (
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-3">
+                <div className="flex items-center gap-2 text-sm text-zinc-300">
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+                  <b>Vote saved.</b> Please wait for others…
+                </div>
+                <button
+                  className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
+                  onClick={() => {
+                    setTemp(you ?? 7);
+                    setEditMode(true);
+                  }}
+                >
+                  Edit vote
+                </button>
+              </div>
+            ) : (
+              <div className="mt-2 rounded-2xl border border-zinc-800 p-3">
+                <div className="mb-2 text-sm text-zinc-300">
+                  Edit your vote <span className="text-zinc-500">(current: {formatScore(you)})</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={10}
+                  step={0.25}
+                  value={temp}
+                  onChange={(e) => setTemp(roundToQuarter(parseFloat((e.target as HTMLInputElement).value)))}
+                  className="w-full"
+                />
+                <div className="mt-2 flex items-center gap-2">
                   <button
-                    className="rounded-xl border px-3 py-2 dark:border-zinc-700"
+                    className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700"
+                    onClick={submit}
+                  >
+                    Save
+                  </button>
+                  <button
+                    className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
                     onClick={() => {
+                      setEditMode(false);
                       setTemp(you ?? 7);
-                      setEditMode(true);
                     }}
                   >
-                    Edit vote
+                    Cancel
                   </button>
-                </div>
-              ) : (
-                <div className="mt-4 rounded-2xl border p-3 dark:border-zinc-700">
-                  <div className="mb-2 text-sm">
-                    Edit your vote{" "}
-                    <span className="text-gray-500">(current: {formatScore(you)})</span>
-                  </div>
-                  <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      className="rounded-xl px-4 py-2 font-medium bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
-                      onClick={submit}
-                    >
-                      Save
-                    </button>
-                    <button
-                      className="rounded-xl border px-3 py-2 dark:border-zinc-700"
-                      onClick={() => {
-                        setEditMode(false);
-                        setTemp(you ?? 7);
-                      }}
-                    >
-                      Cancel
-                    </button>
+                  <div className="ml-auto text-sm font-semibold text-zinc-200">
+                    {formatScore(temp)}
                   </div>
                 </div>
-              )}
-            </>
-          )}
+              </div>
+            )}
+          </div>
 
           {/* Live votes list */}
           <div className="mt-5">
-            <div className="mb-2 text-sm font-semibold">Live votes</div>
+            <div className="mb-2 text-sm font-semibold text-zinc-200">Live votes</div>
             {sorted.length === 0 ? (
-              <div className="rounded-2xl border bg-white p-3 text-sm text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">
                 No votes yet — be the first!
               </div>
             ) : (
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {sorted.map(([name, score]) => {
-                  const isYou = name === currentUser;
-                  return (
-                    <div
-                      key={name}
-                      className={`flex items-center gap-3 rounded-2xl border bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900 ${
-                        isYou ? "ring-2 ring-black dark:ring-white" : ""
-                      }`}
-                    >
-                      <Avatar name={name} />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium">
-                          {name}{" "}
-                          {isYou && (
-                            <span className="ml-1 rounded bg-black px-1.5 py-0.5 text-xs font-semibold text-white dark:bg-white dark:text-black">
-                              You
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="rounded-full border px-2 py-0.5 text-sm font-semibold dark:border-zinc-700">
-                        {formatScore(score)}
-                      </div>
-                    </div>
-                  );
-                })}
+                {sorted.map(([name, score]) => (
+                  <VoterChip key={name} name={name} score={Number(score)} />
+                ))}
               </div>
             )}
           </div>
 
           <div className="mt-5">
-            <button className="rounded-xl border px-4 py-2 dark:border-zinc-700" onClick={onEnd}>
+            <button className="rounded-xl border border-zinc-700 px-4 py-2 text-zinc-200" onClick={onEnd}>
               End voting
             </button>
           </div>
         </div>
       </div>
-    </Card>
+    </div>
   );
 }
 
-// ============================
-// HistoryCardExtended (con fetch locale dei punteggi se mancano)
-// ============================
-function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void }) {
-  const ratings = (v.ratings || {}) as Record<string, number>;
-  const scores = Object.values(ratings).map(Number);
-  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
-  const avgHue = (() => {
-    if (avg == null) return 0;
-    const t = Math.max(1, Math.min(10, avg));
-    return ((t - 3) / 8) * 120;
-  })();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pretty HistoryCardExtended
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ---- Avatar con ring colorato in base al voto (verde / ambra / rosso)
+function ChipAvatar({ name, score }: { name: string; score: number }) {
+  const avatar = loadAvatarFor(name);
+  const ring =
+    score >= 8 ? "ring-emerald-500/60" :
+    score >= 6 ? "ring-amber-400/60"  :
+                 "ring-rose-500/60";
+
+  if (avatar) {
+    return (
+      <img
+        src={avatar}
+        alt={name}
+        className={`h-5 w-5 rounded-full object-cover ring-2 ${ring}`}
+      />
+    );
+  }
+  const initial = name?.[0]?.toUpperCase() || "?";
+  return (
+    <div className={`grid h-5 w-5 place-items-center rounded-full bg-zinc-800 text-[10px] font-bold text-zinc-100 ring-2 ${ring}`}>
+      {initial}
+    </div>
+  );
+}
+
+// ---- Il chip: avatar + nome + • + stella + punteggio
+function VoterChip({ name, score }: { name: string; score: number }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white/70 px-2.5 py-1 text-xs text-gray-900 shadow-sm
+                 backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-200"
+      title={`${name}: ${score}`}
+    >
+      <ChipAvatar name={name} score={Number(score)} />
+      <span className="max-w-[9rem] truncate font-medium">{name}</span>
+      <span className="mx-0.5 h-1 w-1 rounded-full bg-gray-400/70 dark:bg-zinc-500/70" />
+      <span className="inline-flex items-center gap-0.5 font-semibold">
+        {formatScore(Number(score))}
+      </span>
+    </span>
+  );
+}
+
+
+// ===== Helpers per enfasi voti (solo per questi componenti) =====
+const clamp10 = (n: number) => Math.max(1, Math.min(10, Number(n) || 0));
+const scoreHue = (n: number) => ((clamp10(n) - 3) / 8) * 120;
+const scoreBg = (n: number) => `hsl(${scoreHue(n)} 75% 50%)`;
+const scoreGrad = (n: number) =>
+  `linear-gradient(90deg, hsl(${scoreHue(n)} 70% 45%) 0%, hsl(${scoreHue(n)} 70% 55%) 100%)`;
+const scorePct = (n: number) => `${((clamp10(n) - 1) / 9) * 100}%`;
+
+function ScoreDonut({ value, label }: { value: number; label?: string }) {
+  const pct = (clamp10(value) - 1) / 9;
+  const hue = scoreHue(value);
+  return (
+    <div className="flex items-center gap-3">
+      <div
+        className="relative h-16 w-16 rounded-full p-[6px]"
+        style={{
+          background: `conic-gradient(hsl(${hue} 80% 50%) ${pct * 360}deg, rgba(0,0,0,0.12) 0deg)`,
+        }}
+        aria-label={label || `Average ${formatScore(value)}`}
+        title={label || `Average ${formatScore(value)}`}
+      >
+        <div className="flex h-full w-full items-center justify-center rounded-full bg-white text-sm font-bold tabular-nums dark:bg-zinc-950">
+          {formatScore(value)}
+        </div>
+      </div>
+      {label && <div className="text-sm opacity-70">{label}</div>}
+    </div>
+  );
+}
+
+function ScoreRail({
+  scores,
+  avg,
+  markers,
+}: {
+  scores: number[];
+  avg: number | null;
+  markers: Array<{ label: string; value: number }>;
+}) {
+  return (
+    <div className="relative mt-1 h-3 w-full rounded-full bg-gray-200 dark:bg-zinc-800">
+      {avg !== null && (
+        <div
+          className="absolute left-0 top-0 h-3 rounded-full"
+          style={{ width: scorePct(avg), background: scoreGrad(avg) }}
+        />
+      )}
+      {markers.map((m) => (
+        <div
+          key={m.label}
+          className="absolute top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full"
+          style={{ left: scorePct(m.value), background: scoreBg(m.value) }}
+          title={`${m.label}: ${formatScore(m.value)}`}
+        />
+      ))}
+      {avg !== null && (
+        <div
+          className="absolute top-1/2 -mt-[9px] h-5 w-[2px] -translate-y-1/2 rounded-full bg-black dark:bg-white"
+          style={{ left: scorePct(avg) }}
+          title={`Average: ${formatScore(avg)}`}
+        />
+      )}
+    </div>
+  );
+}
+
+function VoteChip({ name, score }: { name: string; score: number }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs shadow-sm
+                 border-gray-200 bg-white dark:border-zinc-700 dark:bg-zinc-900"
+      title={`${name}: ${formatScore(score)}`}
+    >
+      <span className="inline-block h-2 w-2 rounded-full" style={{ background: scoreBg(score) }} />
+      <span className="truncate max-w-[8rem]">{name}</span>
+      <b className="tabular-nums">{formatScore(score)}</b>
+    </span>
+  );
+}
+
+function MetaPill({ children, title }: { children: React.ReactNode; title?: string }) {
+  return (
+    <span
+      title={title}
+      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs
+                 border-gray-200 text-gray-700 dark:border-zinc-700 dark:text-zinc-300"
+    >
+      {children}
+    </span>
+  );
+}
+
+function PickedByPill({ name }: { name: string }) {
+  const avatar =
+    (() => {
+      try {
+        const raw = localStorage.getItem(`cn_profile_${name}`);
+        return raw ? JSON.parse(raw)?.avatar || null : null;
+      } catch {
+        return null;
+      }
+    })() || null;
+
+  const initial = (name || "?").trim()[0]?.toUpperCase() || "?";
+
+  return (
+    <div
+      className="
+        inline-flex items-center gap-3 rounded-full
+        px-3 py-2
+        bg-[#201607] ring-1 ring-[#d8b24a]/30
+        text-[#f6e7b0] shadow-[inset_0_1px_0_rgba(255,255,255,.04)]
+      "
+    >
+      {/* clapper icon */}
+      <div className="grid h-5 w-5 place-items-center rounded-md bg-[#d8b24a] text-black">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 6.5 15.5 4l1 3L4 9.5l-1-3zM4 11h16a1 1 0 0 1 1 1v7H3v-7a1 1 0 0 1 1-1z" />
+        </svg>
+      </div>
+
+      {/* avatar + 'Picked / by' */}
+      <div className="flex items-center gap-2">
+                <div className="leading-4 text-[11px] text-[#f6e7b0]/90">
+          <div className="-mb-0.5">Picked by</div>
+        </div>
+        {avatar ? (
+          <img
+            src={avatar}
+            alt={name}
+            className="h-6 w-6 rounded-full object-cover ring-2 ring-[#d8b24a]/50"
+          />
+        ) : (
+          <div className="grid h-6 w-6 place-items-center rounded-full bg-[#2e2a1f] text-[#f6e7b0] ring-2 ring-[#d8b24a]/40 text-[10px] font-bold">
+            {initial}
+          </div>
+        )}
+      </div>
+
+      {/* nome */}
+      <div className="ml-1 text-sm font-semibold">{name}</div>
+    </div>
+  );
+}
+
+/* ===========================
+ *  HISTORY CARD – EXTENDED
+ * =========================== */
+function HistoryCardExtended({
+  v,
+  onEdit,
+  onMetaResolved,
+}: {
+  v: any;
+  onEdit?: (id: any) => void;
+  onMetaResolved?: (viewingId: any, nextMovie: any) => void;
+}) {
+  const ratings = (v.ratings || {}) as Record<string, number>;
+  const entries = Object.entries(ratings) as [string, number][];
+  const scores = entries.map(([, n]) => Number(n));
+  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
   const releaseYear =
     v?.movie?.release_year ||
@@ -1231,31 +1571,11 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
     ? v.movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
     : "";
 
-  function PickerAvatar({ name }: { name: string }) {
-    const avatar = loadAvatarFor(name);
-    if (avatar) {
-      return (
-        <img
-          src={avatar}
-          alt={name}
-          className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow"
-        />
-      );
-    }
-    const initial = name?.[0]?.toUpperCase() || "?";
-    return (
-      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-sm font-bold ring-2 ring-white shadow">
-        {initial}
-      </div>
-    );
-  }
-
-  // poster/overview (mantieni i tuoi helper/cache)
+  // ----- lazy meta (poster/overview) + cache -----
   const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>({
     poster_path: v?.movie?.poster_path,
     overview: v?.movie?.overview,
   });
-
   React.useEffect(() => {
     setMeta({
       poster_path: v?.movie?.poster_path,
@@ -1263,35 +1583,58 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
     });
   }, [v?.id, v?.movie?.id, v?.movie?.poster_path, v?.movie?.overview]);
 
+  const persistOnceRef = React.useRef(false);
+  const tryPersist = (cand: { poster_path?: string; overview?: string }) => {
+    if (persistOnceRef.current) return;
+    const needPoster = !v?.movie?.poster_path && cand.poster_path;
+    const needOverview = !v?.movie?.overview && (cand.overview && cand.overview.trim());
+    if (needPoster || needOverview) {
+      persistOnceRef.current = true;
+      const nextMovie = { ...v.movie, ...cand };
+      onMetaResolved?.(v.id, nextMovie);
+    }
+  };
+
   const inFlightTitleRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     const title = (v?.movie?.title || "").trim();
     if (!title) return;
+
     const needPoster = !meta?.poster_path;
-    const needOverview = !meta?.overview;
+    const needOverview = !meta?.overview || meta.overview.trim().length === 0;
     if (!needPoster && !needOverview) return;
     if (inFlightTitleRef.current === title) return;
     inFlightTitleRef.current = title;
 
+    // 1) cache
     const cache = getMetaCache();
     const cached = cache[title];
     if (cached && (cached.poster_path || cached.overview)) {
-      setMeta((m) => ({
-        poster_path: m.poster_path || cached.poster_path,
-        overview: m.overview || cached.overview,
-      }));
+      setMeta((m) => {
+        const merged = {
+          poster_path: m.poster_path || cached.poster_path,
+          overview: m.overview || cached.overview,
+        };
+        tryPersist(merged);
+        return merged;
+      });
       inFlightTitleRef.current = null;
       return;
     }
 
+    // 2) fetch
     (async () => {
       try {
         const fetched = await fetchMetaForTitle(title);
         if (fetched) {
-          setMeta((m) => ({
-            poster_path: m.poster_path || fetched.poster_path,
-            overview: m.overview || fetched.overview,
-          }));
+          setMeta((m) => {
+            const merged = {
+              poster_path: m.poster_path || fetched.poster_path,
+              overview: m.overview || fetched.overview,
+            };
+            tryPersist(merged);
+            return merged;
+          });
           const c = getMetaCache();
           c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
           setMetaCache(c);
@@ -1301,31 +1644,71 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
       }
     })();
   }, [v?.movie?.title, meta?.poster_path, meta?.overview]);
+  // -----------------------------------------------
 
-  const poster = meta?.poster_path || v?.movie?.poster_path || "";
-  const overview = (meta?.overview ?? v?.movie?.overview ?? "").trim();
+  const poster = meta?.poster_path ? posterUrl(meta.poster_path, "w342") : "";
+  const overview = (meta?.overview || "").trim();
+
+  // --- UI helpers (ring & bar) ---
+  const AvgRing = ({ value }: { value: number }) => {
+    const r = 26, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
+    return (
+      <div className="relative h-16 w-16">
+        <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
+          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
+          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-lime-400"
+                  strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}/>
+        </svg>
+        <div className="absolute inset-0 grid place-items-center text-sm font-bold">
+          {formatScore(value)}
+        </div>
+      </div>
+    );
+  };
+  const VotesBar = ({ scores, avg }: { scores: number[]; avg: number | null }) => {
+    const toPct = (n: number) => ((n - 1) / 9) * 100;
+    return (
+      <div className="w-full">
+        <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
+          <span>Avg {scores.length ? `(${scores.length} votes)` : ""}</span>
+          <span>10</span>
+        </div>
+        <div className="relative h-4 w-full overflow-hidden rounded-full bg-zinc-800">
+          {avg !== null && (
+            <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
+                 style={{ width: `${toPct(avg)}%` }} />
+          )}
+          {scores.map((s, i) => (
+            <div key={i}
+                 className="pointer-events-none absolute top-1/2 h-6 w-[2px] -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_2px_rgba(0,0,0,0.6)]"
+                 style={{ left: `calc(${toPct(s)}% - 1px)` }}
+                 title={formatScore(s)} />
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
-      {/* HEADER */}
-      <div className="mb-2 flex flex-wrap items-center gap-3">
+    <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
+      {/* Header */}
+      <div className="mb-3 flex items-center gap-3">
         {v.picked_by && (
-          <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
-            <PickerAvatar name={v.picked_by} />
-            <span className="text-sm font-medium">{v.picked_by}</span>
-          </div>
+          <>
+            <PickedByPill name={v.picked_by} />
+            <div className="mx-1 text-gray-300">•</div>
+          </>
         )}
-        <div className="mx-1 text-gray-300">•</div>
 
         <h3 className="min-w-0 text-lg font-semibold leading-tight">
           <span className="break-words">{v.movie?.title || "Untitled"}</span>
+          {releaseYear && <span className="ml-2 text-gray-500">({releaseYear})</span>}
         </h3>
 
         {onEdit && (
           <button
             className="ml-2 rounded-full border px-2.5 py-1 text-xs dark:border-zinc-700"
             onClick={() => onEdit(v.id)}
-            title="Edit movie"
           >
             Edit
           </button>
@@ -1338,152 +1721,116 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
         )}
       </div>
 
-      {/* META BADGES */}
-      <div className="mb-3 mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
-        {releaseYear && (
-          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-            📅 {releaseYear}
-          </span>
-        )}
-        {Number(v?.movie?.runtime) > 0 && (
-          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-            ⏱ {v.movie.runtime} min
-          </span>
-        )}
-        {genreLine && (
-          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-            {genreLine}
-          </span>
-        )}
-        {typeof v?.movie?.imdb_rating === "number" ? (
-          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-            ★ IMDb {formatScore(v.movie.imdb_rating)}
-          </span>
-        ) : typeof v?.movie?.tmdb_vote_average === "number" ? (
-          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-            ★ TMDB {formatScore(v.movie.tmdb_vote_average)}
-          </span>
-        ) : null}
-        {typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0 && (
-          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-            {v.movie.tmdb_vote_count.toLocaleString()} votes
-          </span>
-        )}
-      </div>
-
-      {/* BODY */}
-      <div className="grid gap-4 md:grid-cols-[120px,1fr]">
-        <div className="flex justify-center md:justify-start">
+      {/* Layout: poster grande + info a destra */}
+      <div className="grid gap-5 md:grid-cols-[176px,1fr]">
+        <div className="flex items-start justify-center">
           {poster ? (
             <img
-              src={posterUrl(poster, "w185")}
+              src={poster}
               alt={v.movie?.title}
-              className="h-44 w-28 rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
+              className="h-[264px] w-[176px] rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
             />
           ) : (
-            <div className="flex h-44 w-28 items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+            <div className="flex h-[264px] w-[176px] items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
               No poster
             </div>
           )}
         </div>
 
-        <p className="min-w-0 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
-          {overview && overview.trim().length > 0 ? overview : "No description available."}
-        </p>
-      </div>
-
-      {/* FOOTER: media + voti */}
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        {avg !== null && (
-          <div
-            className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
-            style={{
-              background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
-            }}
-            aria-label={`Average ${formatScore(avg)}`}
-            title={`Average ${formatScore(avg)}`}
-          >
-            <span>★</span>
-            <span>Avg {formatScore(avg)}</span>
-            <span className="ml-1 text-xs opacity-85">({scores.length})</span>
+        <div className="min-w-0">
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
+            {releaseYear && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">📅 {releaseYear}</span>}
+            {Number(v?.movie?.runtime) > 0 && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {v.movie.runtime} min</span>}
+            {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
+            {typeof v?.movie?.imdb_rating === "number" ? (
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(v.movie.imdb_rating)}</span>
+            ) : typeof v?.movie?.tmdb_vote_average === "number" ? (
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(v.movie.tmdb_vote_average)}</span>
+            ) : null}
+            {typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0 && (
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                {v.movie.tmdb_vote_count.toLocaleString()} votes
+              </span>
+            )}
           </div>
-        )}
 
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(ratings).map(([n, s]) => (
-            <span
-              key={n}
-              className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
-              title={`${n}: ${formatScore(Number(s))}`}
-            >
-              {n}: {formatScore(Number(s))}
-            </span>
-          ))}
+          <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
+            {overview || "No description available."}
+          </p>
+
+          <div className="flex items-center gap-4">
+            {avg !== null && <AvgRing value={avg} />}
+            <VotesBar scores={scores} avg={avg} />
+          </div>
+
+          {entries.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {Object.entries(ratings)
+                .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
+                .map(([name, score]) => (
+                  <VoterChip key={name} name={name} score={Number(score)} />
+                ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-
-function HistoryCardCompact({ v, onEdit }: { v: any; onEdit?: (id: any) => void }) {
-    const ratings = (v.ratings || {}) as Record<string, number>;
+function HistoryCardCompact({
+  v,
+  onEdit,
+}: {
+  v: any;
+  onEdit?: (id: any) => void;
+}) {
+  const ratings = (v.ratings || {}) as Record<string, number>;
   const scores = Object.values(ratings).map(Number);
+
   const avg =
     scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
   const avgHue = (() => {
     if (avg == null) return 0;
     const t = Math.max(1, Math.min(10, avg));
-    return ((t - 3) / 8) * 120;
+    return ((t - 3) / 8) * 120; // 3→10 mappa su 0..120 (rosso→verde)
   })();
 
-  function PickerAvatar({ name }: { name: string }) {
-    const avatar = loadAvatarFor(name);
-    if (avatar) {
-      return (
-        <img
-          src={avatar}
-          alt={name}
-          className="h-7 w-7 rounded-full object-cover ring-2 ring-white shadow"
-        />
-      );
-    }
-    const initial = name?.[0]?.toUpperCase() || "?";
-    return (
-      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-200 text-xs font-bold ring-2 ring-white shadow">
-        {initial}
-      </div>
-    );
-  }
+  const releaseYear =
+    v?.movie?.release_year ||
+    (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
+      {/* Header compatto */}
       <div className="flex flex-wrap items-center gap-2">
         {v.picked_by && (
-            <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
-            <PickerAvatar name={v.picked_by} />
-            <span className="text-sm font-medium">{v.picked_by}</span>
-            </div>
+          <>
+            <PickedByPill name={v.picked_by} />
+            <div className="mx-1 text-gray-300">•</div>
+          </>
         )}
-        <div className="mx-1 text-gray-300">•</div>
 
-  {/* Titolo */}
-  <div className="min-w-0 text-[15px] font-semibold leading-tight">
-    <span className="break-words">{v.movie?.title || "Untitled"}</span>
-  </div>
+        <div className="min-w-0 text-[15px] font-semibold leading-tight">
+          <span className="break-words">{v?.movie?.title || "Untitled"}</span>
+          {releaseYear && (
+            <span className="ml-2 text-gray-500">({releaseYear})</span>
+          )}
+        </div>
 
-  {/* ⬅️ Bottone Edit AGGIUNTO QUI */}
-  {onEdit && (
-    <button
-      className="ml-2 rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700"
-      onClick={() => onEdit(v.id)}
-      title="Edit movie"
-    >
-      Edit
-    </button>
-  )}
-</div>
+        {onEdit && (
+          <button
+            className="ml-2 rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700"
+            onClick={() => onEdit(v.id)}
+            title="Edit movie"
+          >
+            Edit
+          </button>
+        )}
+      </div>
+
+      {/* Avg + votanti */}
       <div className="mt-3 flex flex-wrap items-center gap-3">
         {avg !== null && (
           <div
@@ -1496,19 +1843,20 @@ function HistoryCardCompact({ v, onEdit }: { v: any; onEdit?: (id: any) => void 
           >
             <span className="leading-none">★</span>
             <span>Avg {formatScore(avg)}</span>
+            <span className="ml-1 text-xs opacity-85">({scores.length})</span>
           </div>
         )}
 
+        {/* Chip dei votanti con icona/avatar */}
         <div className="flex flex-wrap gap-2">
-          {Object.entries(ratings).map(([n, s]) => (
-            <span
-              key={n}
-              className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
-              title={`${n}: ${formatScore(Number(s))}`}
-            >
-              {n}: {formatScore(Number(s))}
-            </span>
-          ))}
+          {Object.entries(ratings)
+            .sort(
+              (a, b) =>
+                Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0])
+            )
+            .map(([name, score]) => (
+              <VoterChip key={name} name={name} score={Number(score)} />
+            ))}
         </div>
       </div>
     </div>
@@ -2539,7 +2887,6 @@ useEffect(() => {
   }
 };
 
-
   
   return (
     <div className="min-h-screen bg-gray-50 p-4 text-gray-900 dark:bg-zinc-950 dark:text-zinc-100">
@@ -2559,6 +2906,14 @@ useEffect(() => {
                   ratings={activeRatings}
                   onSendVote={sendVote}
                   onEnd={endVoting}
+                  onMetaResolved={async (nextMovie) => {
+                    // UI
+                    const nextActive = { ...activeVote, movie: nextMovie };
+                    setActiveVote(nextActive);
+                    // server (Supabase) o locale
+                    if (sb) await saveSharedState({ active: nextActive });
+                    else lsSetJSON(K_ACTIVE_VOTE, nextActive);
+                  }}
                 />
               ) : (
                 <>
@@ -2779,6 +3134,7 @@ useEffect(() => {
                             key={v.id}
                             v={v}
                             onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
+                            onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)} // salva + persist
                           />
                         ) : (
                           <HistoryCardCompact
