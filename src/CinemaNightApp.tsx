@@ -16,6 +16,7 @@ import { createClient } from "@supabase/supabase-js";
 // Config / keys
 // ============================
 const TMDB_API_KEY = "99cb7c79bbe966a91a2ffcb7a3ea3d37";
+const OMDB_API_KEY = "c71ea1b7";
 
 const K_USER = "cn_user";
 const K_VIEWINGS = "cn_viewings";
@@ -45,6 +46,55 @@ const STORAGE_BUCKET = "circo";
 const STORAGE_BASE_HISTORY_KEY = "history.json";       // seed, sola lettura
 const STORAGE_LIVE_HISTORY_KEY = "history_live.json";  // file “vivo” dove scriviamo
 
+function formatCompact(n: number) {
+  if (n < 1000) return String(n);
+  const units = ["k","M","B","T"];
+  let i = -1;
+  let v = n;
+  do { v /= 1000; i++; } while (v >= 1000 && i < units.length - 1);
+  return `${Math.round(v * 10) / 10}${units[i]}`;
+}
+
+// TMDB: prime recensioni
+async function tmdbReviews(tmdbId: number) {
+  try {
+    const url = `https://api.themoviedb.org/3/movie/${tmdbId}/reviews?api_key=${TMDB_API_KEY}&language=en-US&page=1`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const results = Array.isArray(data?.results) ? data.results : [];
+    return results.slice(0, 3).map((r: any) => ({
+      id: r.id,
+      author: r?.author || r?.author_details?.username || "Unknown",
+      rating: typeof r?.author_details?.rating === "number" ? r.author_details.rating : null,
+      content: r?.content || "",
+      url: r?.url || "",
+      created_at: r?.created_at || null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+
+async function omdbRatingFromImdbId(imdbId: string) {
+  try {
+    if (!OMDB_API_KEY || !imdbId) return null;
+    const res = await fetch(`https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${imdbId}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data?.Response !== "True") return null;
+    return {
+      imdb_rating: data.imdbRating !== "N/A" ? parseFloat(data.imdbRating) : null,
+      imdb_votes:
+        data.imdbVotes && data.imdbVotes !== "N/A"
+          ? parseInt(String(data.imdbVotes).replace(/,/g, ""), 10)
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 
 async function loadHistoryFromStorage(): Promise<any[] | null> {
@@ -289,114 +339,84 @@ async function setRatingAtomic(user: string, score: number) {
 }
 
 
-/** Ritorna movie con `runtime` valorizzato (se lo trova su TMDB). */
-async function ensureRuntime(movie: any): Promise<any> {
-    try {
-      const rt = Number((movie as any)?.runtime);
-      if (!Number.isNaN(rt) && rt > 0) return movie;
-  
-      if (movie?.id) {
-        const det = await tmdbDetails(movie.id);
-        if (det?.runtime) {
-          return {
-            ...movie,
-            runtime: det.runtime,
-            genres: Array.isArray(movie?.genres) && movie.genres.length ? movie.genres : (det.genres || []),
-            poster_path: movie.poster_path ?? det.poster_path,
-            overview: movie.overview ?? det.overview,
-          };
-        }
-      }
-  
-      const title = movie?.title || "";
-      if (!title) return movie;
-  
-      const res = await tmdbSearch(title);
-      const first = res?.[0];
-      if (!first?.id) return movie;
-  
-      const det = await tmdbDetails(first.id);
-      if (det?.runtime) {
-        return {
-          ...movie,
-          id: movie.id ?? first.id,
-          runtime: det.runtime,
-          genres: Array.isArray(movie?.genres) && movie.genres.length ? movie.genres : (det.genres || []),
-          poster_path: movie.poster_path ?? det.poster_path ?? first.poster_path,
-          overview: movie.overview ?? det.overview ?? first.overview ?? "",
-        };
-      }
-      return movie;
-    } catch {
-      return movie;
+function mergeMovie(base: any, det: any) {
+  const release_year =
+    (det?.release_date || base?.release_date || "").slice(0, 4) ||
+    base?.release_year ||
+    null;
+
+  return {
+    ...base,
+    id: base?.id ?? det?.id,
+    poster_path: base?.poster_path ?? det?.poster_path,
+    overview: base?.overview ?? det?.overview ?? "",
+    genres: Array.isArray(det?.genres) ? det.genres : (base?.genres || []),
+    runtime: det?.runtime ?? base?.runtime,
+    release_year,
+    tmdb_vote_average:
+      typeof det?.vote_average === "number"
+        ? det.vote_average
+        : base?.tmdb_vote_average,
+    tmdb_vote_count:
+      typeof det?.vote_count === "number"
+        ? det.vote_count
+        : base?.tmdb_vote_count,
+    imdb_id: det?.external_ids?.imdb_id ?? base?.imdb_id,
+  };
+}
+
+// Assicura che il movie abbia almeno genres (e, già che ci siamo, completiamo poster/overview se mancano)
+async function ensureGenres(movie: any): Promise<any> {
+  try {
+    let out = { ...movie };
+    let det: any = null;
+
+    if (movie?.id) {
+      det = await tmdbDetails(movie.id);
+      if (det) out = mergeMovie(out, det);
     }
-  }
-  
-  
 
-// piccola pausa per non bombardare TMDB (opzionale)
-const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
-
-/** Completa poster/overview/genres per un film dato, usando TMDB. */
-async function enrichFromTmdbByTitleOrId(movie: any) {
-    try {
-      // se ha già generi E runtime, non fare nulla
-      const hasGenres = Array.isArray(movie?.genres) && movie.genres.length > 0;
-      const rt = Number((movie as any)?.runtime);
-      const hasRuntime = !Number.isNaN(rt) && rt > 0;
-      if (hasGenres && hasRuntime) return movie;
-  
-      // prova con id diretto
-      if (movie?.id) {
-        const det = await tmdbDetails(movie.id);
-        if (det) {
-          return {
-            ...movie,
-            poster_path: movie.poster_path ?? det.poster_path,
-            overview: movie.overview ?? det.overview,
-            genres: Array.isArray(det.genres) ? det.genres : (movie.genres || []),
-            runtime: det.runtime ?? movie.runtime,
-          };
-        }
-      }
-  
-      // altrimenti cerca per titolo
-      const title = movie?.title || "";
-      if (!title) return movie;
-  
-      const search = await tmdbSearch(title);
+    if (!out?.id && movie?.title) {
+      const search = await tmdbSearch(movie.title);
       const first = search?.[0];
-      if (!first?.id) {
-        // almeno riempi poster/overview se ci sono nel "first"
-        return {
-          ...movie,
-          poster_path: movie.poster_path ?? first?.poster_path,
-          overview: movie.overview ?? first?.overview ?? movie.overview,
-        };
+      if (first?.id) {
+        det = await tmdbDetails(first.id);
+        out = det
+          ? mergeMovie(out, det)
+          : {
+              ...out,
+              id: first.id,
+              poster_path: out.poster_path ?? first.poster_path,
+              overview: out.overview ?? first.overview ?? "",
+            };
       }
-  
-      const det = await tmdbDetails(first.id);
-      if (!det) {
-        return {
-          ...movie,
-          id: movie.id ?? first.id,
-          poster_path: movie.poster_path ?? first.poster_path,
-          overview: movie.overview ?? first.overview ?? "",
-        };
-      }
-  
-      return {
-        ...movie,
-        id: movie.id ?? first.id,
-        poster_path: movie.poster_path ?? det.poster_path ?? first.poster_path,
-        overview: movie.overview ?? det.overview ?? first.overview ?? "",
-        genres: Array.isArray(det.genres) ? det.genres : (movie.genres || []),
-        runtime: det.runtime ?? movie.runtime,
-      };
-    } catch {
-      return movie;
     }
+
+    // IMDb rating (se possibile), altrimenti useremo tmdb_vote_average in UI
+    if (!out.imdb_rating && out.imdb_id) {
+      const omdb = await omdbRatingFromImdbId(out.imdb_id);
+      if (omdb) out = { ...out, ...omdb };
+    }
+
+    return out;
+  } catch {
+    return movie;
   }
+}
+
+async function ensureRuntime(movie: any): Promise<any> {
+  try {
+    return await ensureGenres(movie);
+  } catch {
+    return movie;
+  }
+}
+  
+  const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+async function enrichFromTmdbByTitleOrId(movie: any) {
+  return await ensureGenres(movie);
+}
   
 function getAverage(r: Record<string, number> | undefined | null) {
   if (!r) return null;
@@ -459,7 +479,7 @@ async function tmdbSearch(query: string) {
 }
 async function tmdbDetails(tmdbId: number) {
   try {
-    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US&append_to_response=external_ids`;
     const res = await fetch(url);
     if (!res.ok) return null;
     return await res.json();
@@ -467,31 +487,6 @@ async function tmdbDetails(tmdbId: number) {
     return null;
   }
 }
-
-// Assicura che il movie abbia almeno genres (e, già che ci siamo, completiamo poster/overview se mancano)
-async function ensureGenres(movie: any): Promise<any> {
-    try {
-      const hasGenres = Array.isArray(movie?.genres) && movie.genres.length > 0;
-      if (hasGenres && Number(movie?.runtime) > 0) return movie;
-  
-      if (movie?.id) {
-        const det = await tmdbDetails(movie.id);
-        if (det) {
-          return {
-            ...movie,
-            poster_path: movie.poster_path ?? det.poster_path,
-            overview: movie.overview ?? det.overview,
-            genres: Array.isArray(det.genres) ? det.genres : (movie.genres || []),
-            runtime: det.runtime ?? movie.runtime,
-          };
-        }
-      }
-      // fallback: se non ha id, prova via enrich generale (che cerca per titolo)
-      return await enrichFromTmdbByTitleOrId(movie);
-    } catch {
-      return movie;
-    }
-  }
   
 
 // TMDB metadata cache for History seed entries
@@ -948,6 +943,9 @@ function Avatar({ name }: { name: string }) {
   return <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold">{initials || "?"}</div>;
 }
 
+// ============================
+// ActiveVoting (uguale a prima, con fallback "scores" locale)
+// ============================
 function ActiveVoting({
   movie,
   pickedBy,
@@ -966,11 +964,11 @@ function ActiveVoting({
   const you = ratings[currentUser];
   const hasVoted = typeof you === "number";
 
-  const [openVote, setOpenVote] = useState(false);
-  const [editMode, setEditMode] = useState(false);
-  const [temp, setTemp] = useState<number>(you ?? 7);
+  const [openVote, setOpenVote] = React.useState(false);
+  const [editMode, setEditMode] = React.useState(false);
+  const [temp, setTemp] = React.useState<number>(you ?? 7);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (typeof you === "number") setTemp(you);
   }, [you]);
 
@@ -992,17 +990,67 @@ function ActiveVoting({
   const scores = entries.map(([, n]) => Number(n));
   const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
+  const releaseYear =
+    movie?.release_year ||
+    (movie?.release_date ? String(movie.release_date).slice(0, 4) : null);
+
+  const genreLine = Array.isArray(movie?.genres)
+    ? movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
+    : "";
+
   return (
     <Card className="p-5">
       <div className="flex flex-col gap-5 md:flex-row">
-        {movie.poster_path && <img src={posterUrl(movie.poster_path, "w342")} className="h-48 w-32 flex-shrink-0 rounded-xl object-cover" alt={movie.title} />}
+        {movie?.poster_path && (
+          <img
+            src={posterUrl(movie.poster_path, "w342")}
+            className="h-48 w-32 flex-shrink-0 rounded-xl object-cover"
+            alt={movie?.title}
+          />
+        )}
 
         <div className="flex-1">
           <div className="flex items-start gap-4">
             <div className="flex-1">
-              <div className="text-xl font-bold">Voting in progress · {movie.title}</div>
+              <div className="text-xl font-bold">
+                Voting in progress · {movie?.title}
+              </div>
+
+              {/* META BADGES */}
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-gray-600 dark:text-zinc-400">
+                {releaseYear && (
+                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                    📅 {releaseYear}
+                  </span>
+                )}
+                {Number(movie?.runtime) > 0 && (
+                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                    ⏱ {movie.runtime} min
+                  </span>
+                )}
+                {genreLine && (
+                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                    {genreLine}
+                  </span>
+                )}
+                {typeof movie?.imdb_rating === "number" ? (
+                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                    ★ IMDb {formatScore(movie.imdb_rating)}
+                  </span>
+                ) : typeof movie?.tmdb_vote_average === "number" ? (
+                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                    ★ TMDB {formatScore(movie.tmdb_vote_average)}
+                  </span>
+                ) : null}
+                {typeof movie?.tmdb_vote_count === "number" && movie.tmdb_vote_count > 0 && (
+                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                    {movie.tmdb_vote_count.toLocaleString()} votes
+                  </span>
+                )}
+              </div>
+
               {pickedBy && (
-                <div className="text-sm">
+                <div className="mt-2 text-sm">
                   <span className="rounded-full bg-black px-2 py-1 text-white dark:bg-white dark:text-black">
                     Picked by: <b>{pickedBy}</b>
                   </span>
@@ -1011,7 +1059,9 @@ function ActiveVoting({
             </div>
           </div>
 
-          <p className="mt-2 text-gray-700 dark:text-zinc-300">{movie.overview}</p>
+          {movie?.overview && (
+            <p className="mt-2 text-gray-700 dark:text-zinc-300">{movie.overview}</p>
+          )}
 
           <div className="mt-3 flex w-full items-stretch gap-3">
             <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
@@ -1019,15 +1069,21 @@ function ActiveVoting({
               <div className="text-2xl font-bold leading-6">{scores.length}</div>
             </div>
             <div className="flex-1 rounded-2xl border bg-gray-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
-              <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Live avg</div>
-              <div className="text-2xl font-bold leading-6">{avg !== null ? formatScore(avg) : "—"}</div>
+              <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">★ Live avg</div>
+              <div className="text-2xl font-bold leading-6">
+                {avg !== null ? formatScore(avg) : "—"}
+              </div>
             </div>
           </div>
 
+          {/* --- Vote area --- */}
           {!hasVoted ? (
             <div className="mt-4">
               {!openVote ? (
-                <button className="rounded-xl bg-black px-4 py-2 text-white dark:bg-white dark:text-black" onClick={() => setOpenVote(true)}>
+                <button
+                  className="rounded-xl px-4 py-2 font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                  onClick={() => setOpenVote(true)}
+                >
                   Vote
                 </button>
               ) : (
@@ -1035,7 +1091,10 @@ function ActiveVoting({
                   <div className="mb-2 text-sm">Choose your score</div>
                   <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
                   <div className="mt-2 flex gap-2">
-                    <button className="rounded-xl bg-black px-4 py-2 text-white dark:bg-white dark:text-black" onClick={submit}>
+                    <button
+                      className="rounded-xl px-4 py-2 font-medium bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                      onClick={submit}
+                    >
                       Submit vote
                     </button>
                     <button
@@ -1074,11 +1133,15 @@ function ActiveVoting({
               ) : (
                 <div className="mt-4 rounded-2xl border p-3 dark:border-zinc-700">
                   <div className="mb-2 text-sm">
-                    Edit your vote <span className="text-gray-500">(current: {formatScore(you)})</span>
+                    Edit your vote{" "}
+                    <span className="text-gray-500">(current: {formatScore(you)})</span>
                   </div>
                   <RatingBar value={temp} onChange={(v) => setTemp(roundToQuarter(v))} />
                   <div className="mt-2 flex gap-2">
-                    <button className="rounded-xl bg-black px-4 py-2 text-white dark:bg-white dark:text-black" onClick={submit}>
+                    <button
+                      className="rounded-xl px-4 py-2 font-medium bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                      onClick={submit}
+                    >
                       Save
                     </button>
                     <button
@@ -1096,10 +1159,11 @@ function ActiveVoting({
             </>
           )}
 
+          {/* Live votes list */}
           <div className="mt-5">
             <div className="mb-2 text-sm font-semibold">Live votes</div>
             {sorted.length === 0 ? (
-              <div className="rounded-xl border bg-white p-3 text-sm text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+              <div className="rounded-2xl border bg-white p-3 text-sm text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                 No votes yet — be the first!
               </div>
             ) : (
@@ -1116,10 +1180,17 @@ function ActiveVoting({
                       <Avatar name={name} />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-medium">
-                          {name} {isYou && <span className="ml-1 rounded bg-black px-1.5 py-0.5 text-xs font-semibold text-white dark:bg-white dark:text-black">You</span>}
+                          {name}{" "}
+                          {isYou && (
+                            <span className="ml-1 rounded bg-black px-1.5 py-0.5 text-xs font-semibold text-white dark:bg-white dark:text-black">
+                              You
+                            </span>
+                          )}
                         </div>
                       </div>
-                      <div className="rounded-full border px-2 py-0.5 text-sm font-semibold dark:border-zinc-700">{formatScore(score)}</div>
+                      <div className="rounded-full border px-2 py-0.5 text-sm font-semibold dark:border-zinc-700">
+                        {formatScore(score)}
+                      </div>
                     </div>
                   );
                 })}
@@ -1139,7 +1210,7 @@ function ActiveVoting({
 }
 
 // ============================
-// History cards (Extended + Compact)
+// HistoryCardExtended (con fetch locale dei punteggi se mancano)
 // ============================
 function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void }) {
   const ratings = (v.ratings || {}) as Record<string, number>;
@@ -1149,8 +1220,16 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
   const avgHue = (() => {
     if (avg == null) return 0;
     const t = Math.max(1, Math.min(10, avg));
-    return ((t - 3) / 8) * 120; // 0..120
+    return ((t - 3) / 8) * 120;
   })();
+
+  const releaseYear =
+    v?.movie?.release_year ||
+    (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
+
+  const genreLine = Array.isArray(v?.movie?.genres)
+    ? v.movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
+    : "";
 
   function PickerAvatar({ name }: { name: string }) {
     const avatar = loadAvatarFor(name);
@@ -1171,166 +1250,181 @@ function HistoryCardExtended({ v, onEdit }: { v: any; onEdit?: (id: any) => void
     );
   }
 
-
-  // --- META STATE (poster/overview) sincronizzato con v.movie ---
+  // poster/overview (mantieni i tuoi helper/cache)
   const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>({
     poster_path: v?.movie?.poster_path,
     overview: v?.movie?.overview,
   });
 
-// 1) Sync immediato con i cambi del film (anche se il titolo resta uguale)
-React.useEffect(() => {
-  setMeta({
-    poster_path: v?.movie?.poster_path,
-    overview: v?.movie?.overview,
-  });
-}, [v?.id, v?.movie?.id, v?.movie?.poster_path, v?.movie?.overview]);
+  React.useEffect(() => {
+    setMeta({
+      poster_path: v?.movie?.poster_path,
+      overview: v?.movie?.overview,
+    });
+  }, [v?.id, v?.movie?.id, v?.movie?.poster_path, v?.movie?.overview]);
 
-// 2) Se manca poster/overview, prova cache → TMDB (chiave: titolo)
-const inFlightTitleRef = React.useRef<string | null>(null);
+  const inFlightTitleRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const title = (v?.movie?.title || "").trim();
+    if (!title) return;
+    const needPoster = !meta?.poster_path;
+    const needOverview = !meta?.overview;
+    if (!needPoster && !needOverview) return;
+    if (inFlightTitleRef.current === title) return;
+    inFlightTitleRef.current = title;
 
-React.useEffect(() => {
-  const title = (v?.movie?.title || "").trim();
-  if (!title) return;
-
-  const needPoster = !meta?.poster_path;
-  const needOverview = !meta?.overview;
-  if (!needPoster && !needOverview) return;
-
-  // Evita fetch duplicati per lo stesso titolo
-  if (inFlightTitleRef.current === title) return;
-  inFlightTitleRef.current = title;
-
-  // Cache locale
-  const cache = getMetaCache();
-  const cached = cache[title];
-  if (cached && (cached.poster_path || cached.overview)) {
-    setMeta((m) => ({
-      poster_path: m.poster_path || cached.poster_path,
-      overview: m.overview || cached.overview,
-    }));
-    inFlightTitleRef.current = null;
-    return;
-  }
-
-  // Fallback: fetch da TMDB
-  (async () => {
-    try {
-      const fetched = await fetchMetaForTitle(title);
-      if (fetched) {
-        setMeta((m) => ({
-          poster_path: m.poster_path || fetched.poster_path,
-          overview: m.overview || fetched.overview,
-        }));
-        const c = getMetaCache();
-        c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
-        setMetaCache(c);
-      }
-    } finally {
+    const cache = getMetaCache();
+    const cached = cache[title];
+    if (cached && (cached.poster_path || cached.overview)) {
+      setMeta((m) => ({
+        poster_path: m.poster_path || cached.poster_path,
+        overview: m.overview || cached.overview,
+      }));
       inFlightTitleRef.current = null;
+      return;
     }
-  })();
-}, [v?.movie?.title, meta?.poster_path, meta?.overview]);
 
-const poster = meta?.poster_path || v?.movie?.poster_path || "";
-const overview = (meta?.overview ?? v?.movie?.overview ?? "").trim();
+    (async () => {
+      try {
+        const fetched = await fetchMetaForTitle(title);
+        if (fetched) {
+          setMeta((m) => ({
+            poster_path: m.poster_path || fetched.poster_path,
+            overview: m.overview || fetched.overview,
+          }));
+          const c = getMetaCache();
+          c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
+          setMetaCache(c);
+        }
+      } finally {
+        inFlightTitleRef.current = null;
+      }
+    })();
+  }, [v?.movie?.title, meta?.poster_path, meta?.overview]);
+
+  const poster = meta?.poster_path || v?.movie?.poster_path || "";
+  const overview = (meta?.overview ?? v?.movie?.overview ?? "").trim();
 
   return (
     <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 transition hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
-        {/* HEADER */}
-            <div className="mb-3 flex flex-wrap items-center gap-3">
-            {v.picked_by && (
-                <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
-                <PickerAvatar name={v.picked_by} />
-                <span className="text-sm font-medium">{v.picked_by}</span>
-                </div>
-            )}
-            <div className="mx-1 text-gray-300">•</div>
-
-            {/* Titolo */}
-            <h3 className="min-w-0 text-lg font-semibold leading-tight">
-                <span className="break-words">{v.movie?.title || "Untitled"}</span>
-            </h3>
-
-            {/* ⬅️ Bottone Edit AGGIUNTO QUI, subito dopo il titolo */}
-            {onEdit && (
-                <button
-                className="ml-2 rounded-full border px-2.5 py-1 text-xs dark:border-zinc-700"
-                onClick={() => onEdit(v.id)}
-                title="Edit movie"
-                >
-                Edit
-                </button>
-            )}
-
-            {v.started_at && (
-                <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
-                {new Date(v.started_at).toLocaleString()}
-                </span>
-            )}
-            </div>
-
-
-        {/* BODY: poster + overview */}
-        <div className="grid gap-4 md:grid-cols-[120px,1fr]">
-          <div className="flex justify-center md:justify-start">
-            {poster ? (
-              <img
-                src={posterUrl(poster, "w185")}
-                alt={v.movie?.title}
-                className="h-44 w-28 rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
-              />
-            ) : (
-              <div className="flex h-44 w-28 items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
-                No poster
-              </div>
-            )}
+      {/* HEADER */}
+      <div className="mb-2 flex flex-wrap items-center gap-3">
+        {v.picked_by && (
+          <div className="flex items-center gap-2 rounded-full bg-gray-50 px-2 py-1 dark:bg-zinc-900 dark:border dark:border-zinc-800">
+            <PickerAvatar name={v.picked_by} />
+            <span className="text-sm font-medium">{v.picked_by}</span>
           </div>
+        )}
+        <div className="mx-1 text-gray-300">•</div>
 
-          <p className="min-w-0 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
-            {overview && overview.trim().length > 0 ? overview : "No description available."}
-          </p>
-        </div>
+        <h3 className="min-w-0 text-lg font-semibold leading-tight">
+          <span className="break-words">{v.movie?.title || "Untitled"}</span>
+        </h3>
 
-        {/* FOOTER: media + voti */}
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          {avg !== null && (
-            <div
-              className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
-              style={{
-                background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
-              }}
-              aria-label={`Average ${formatScore(avg)}`}
-              title={`Average ${formatScore(avg)}`}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                className="h-4 w-4"
-              >
-                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.803 2.036a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118L10.95 14.9a1 1 0 00-1.175 0l-2.984 2.083c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.155 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.95-.69l1.895-3.293z" />
-              </svg>
-              <span>Avg {formatScore(avg)}</span>
-              <span className="ml-1 text-xs opacity-85">({scores.length})</span>
+        {onEdit && (
+          <button
+            className="ml-2 rounded-full border px-2.5 py-1 text-xs dark:border-zinc-700"
+            onClick={() => onEdit(v.id)}
+            title="Edit movie"
+          >
+            Edit
+          </button>
+        )}
+
+        {v.started_at && (
+          <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
+            {new Date(v.started_at).toLocaleString()}
+          </span>
+        )}
+      </div>
+
+      {/* META BADGES */}
+      <div className="mb-3 mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
+        {releaseYear && (
+          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+            📅 {releaseYear}
+          </span>
+        )}
+        {Number(v?.movie?.runtime) > 0 && (
+          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+            ⏱ {v.movie.runtime} min
+          </span>
+        )}
+        {genreLine && (
+          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+            {genreLine}
+          </span>
+        )}
+        {typeof v?.movie?.imdb_rating === "number" ? (
+          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+            ★ IMDb {formatScore(v.movie.imdb_rating)}
+          </span>
+        ) : typeof v?.movie?.tmdb_vote_average === "number" ? (
+          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+            ★ TMDB {formatScore(v.movie.tmdb_vote_average)}
+          </span>
+        ) : null}
+        {typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0 && (
+          <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+            {v.movie.tmdb_vote_count.toLocaleString()} votes
+          </span>
+        )}
+      </div>
+
+      {/* BODY */}
+      <div className="grid gap-4 md:grid-cols-[120px,1fr]">
+        <div className="flex justify-center md:justify-start">
+          {poster ? (
+            <img
+              src={posterUrl(poster, "w185")}
+              alt={v.movie?.title}
+              className="h-44 w-28 rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
+            />
+          ) : (
+            <div className="flex h-44 w-28 items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+              No poster
             </div>
           )}
+        </div>
 
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(ratings).map(([n, s]) => (
-              <span
-                key={n}
-                className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
-                title={`${n}: ${formatScore(Number(s))}`}
-              >
-                {n}: {formatScore(Number(s))}
-              </span>
-            ))}
+        <p className="min-w-0 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
+          {overview && overview.trim().length > 0 ? overview : "No description available."}
+        </p>
+      </div>
+
+      {/* FOOTER: media + voti */}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        {avg !== null && (
+          <div
+            className="flex items-center gap-2 rounded-full px-3 py-1 text-sm font-bold text-white shadow"
+            style={{
+              background: `linear-gradient(90deg, hsl(${avgHue} 70% 45%) 0%, hsl(${avgHue} 70% 55%) 100%)`,
+            }}
+            aria-label={`Average ${formatScore(avg)}`}
+            title={`Average ${formatScore(avg)}`}
+          >
+            <span>★</span>
+            <span>Avg {formatScore(avg)}</span>
+            <span className="ml-1 text-xs opacity-85">({scores.length})</span>
           </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(ratings).map(([n, s]) => (
+            <span
+              key={n}
+              className="rounded-2xl border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-800 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              title={`${n}: ${formatScore(Number(s))}`}
+            >
+              {n}: {formatScore(Number(s))}
+            </span>
+          ))}
         </div>
       </div>
+    </div>
   );
 }
+
 
 function HistoryCardCompact({ v, onEdit }: { v: any; onEdit?: (id: any) => void }) {
     const ratings = (v.ratings || {}) as Record<string, number>;
@@ -1979,6 +2073,7 @@ export default function CinemaNightApp() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme());
   useEffect(() => applyTheme(theme), [theme]);
   const [isBackfillingRuntime, setIsBackfillingRuntime] = useState(false);
+  const [isBackfillingRatings, setIsBackfillingRatings] = useState(false);
 
   const [user, setUser] = useState<string>("");
   const [tab, setTab] = useState<"vote" | "history" | "profile" | "stats">("vote");
@@ -2029,6 +2124,65 @@ const [editingViewing, setEditingViewing] = useState<{ id: any; title: string } 
     setIsBackfilling(false);
   }
   };
+
+  const backfillRatingsMeta = async () => {
+  if (isBackfillingRatings) return;
+  setIsBackfillingRatings(true);
+  try {
+    const list = history.slice();
+    let changed = false;
+
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      let m = { ...(v?.movie || {}) };
+
+      // --- TMDB details (by id; else search by title) ---
+      let det: any = null;
+      if (m?.id) {
+        det = await tmdbDetails(m.id);
+      } else if (m?.title) {
+        const s = await tmdbSearch(m.title);
+        const first = s?.[0];
+        if (first?.id) det = await tmdbDetails(first.id);
+      }
+      if (det) {
+        // unisci campi TMDB (vote_average/vote_count, genres, runtime, poster, overview, imdb_id, release_year…)
+        m = mergeMovie(m, det);
+      }
+
+      // fallback release_year da release_date se ancora mancante
+      if (!m?.release_year && m?.release_date) {
+        m.release_year = String(m.release_date).slice(0, 4);
+      }
+
+      // --- OMDb (IMDb rating/votes) se abbiamo imdb_id e mancano valori ---
+      const needImdb =
+        m?.imdb_id && (m.imdb_rating == null || m.imdb_votes == null);
+      if (needImdb) {
+        const om = await omdbRatingFromImdbId(m.imdb_id);
+        if (om) m = { ...m, ...om };
+      }
+
+      // cambia se davvero è diverso
+      if (JSON.stringify(m) !== JSON.stringify(v.movie)) {
+        list[i] = { ...v, movie: m };
+        changed = true;
+      }
+
+      await sleep(220); // gentile con le API
+    }
+
+    if (changed) {
+      setHistory(list);        // UI
+      await persistHistory(list); // Storage + cn_state
+    }
+  } catch (e) {
+    console.error("[backfillRatingsMeta] failed:", e);
+    alert("Errore durante il backfill dei rating (vedi console).");
+  } finally {
+    setIsBackfillingRatings(false);
+  }
+};
 
 
   const backfillHistoryRuntime = async () => {
@@ -2226,6 +2380,15 @@ useEffect(() => {
   return () => off();
 }, []);
 
+useEffect(() => {
+  if (!history.length || isBackfillingRatings) return;
+  const missing = history.some(h => {
+    const m = h?.movie || {};
+    return (m.imdb_rating == null && m.tmdb_vote_average == null);
+  });
+  if (missing) backfillRatingsMeta();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [history.length, isBackfillingRatings]);
 
   useEffect(() => {
     const hasAnyGenre = history.some(
