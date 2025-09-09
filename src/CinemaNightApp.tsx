@@ -855,25 +855,6 @@ function EditMovieDialog({
   );
 }
 
-  
-
-function RatingBar({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return (
-    <div className="flex items-center gap-3">
-      <input
-        type="range"
-        min={1}
-        max={10}
-        step={0.25}
-        value={value}
-        onChange={(e) => onChange(parseFloat((e.target as HTMLInputElement).value))}
-        className="w-full"
-      />
-      <div className="w-12 text-center font-semibold">{formatScore(value)}</div>
-    </div>
-  );
-}
-
 /** StartVoteCard: choose movie and "Picked by" */
 function StartVoteCard({
   movie,
@@ -954,13 +935,16 @@ const ClapperIcon: React.FC<{ className?: string }> = ({ className = "" }) => (
   </svg>
 );
 
-function PickerBadge({ name }: { name?: string }) {
+export function PickedByBadge({ name }: { name?: string }) {
   if (!name) return null;
   const avatar = loadAvatarFor(name);
   const initial = name?.[0]?.toUpperCase() || "?";
+
   return (
     <span
-      className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-1.5 text-amber-200 shadow-sm backdrop-blur ring-1 ring-amber-400/20"
+      className="inline-flex items-center gap-2 rounded-full border border-amber-400/40
+                 bg-amber-500/15 px-2.5 py-1.5 text-amber-200 shadow-sm backdrop-blur
+                 ring-1 ring-amber-400/20"
       title={`Picked by: ${name}`}
     >
       <ClapperIcon className="text-amber-300" />
@@ -971,15 +955,16 @@ function PickerBadge({ name }: { name?: string }) {
           className="h-5 w-5 rounded-full object-cover ring-2 ring-amber-400/50"
         />
       ) : (
-        <span className="grid h-5 w-5 place-items-center rounded-full bg-amber-500/20 text-[10px] font-bold text-amber-100 ring-2 ring-amber-400/50">
+        <span className="grid h-5 w-5 place-items-center rounded-full bg-amber-500/20
+                         text-[10px] font-bold text-amber-100 ring-2 ring-amber-400/50">
           {initial}
         </span>
       )}
-      <span className="text-xs font-semibold">Picked by</span>
       <span className="text-xs font-bold">{name}</span>
     </span>
   );
 }
+
 
 function AvatarInline({ name }: { name: string }) {
   const avatar = loadAvatarFor(name);
@@ -997,6 +982,190 @@ function AvatarInline({ name }: { name: string }) {
   );
 }
 
+function ScoreSlider({
+  value,
+  onChange,
+  min = 1,
+  max = 10,
+  step = 0.25,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  const clamp = (n: number) => Math.min(max, Math.max(min, n));
+  const toPct = (n: number) => ((clamp(n) - min) / (max - min)) * 100;
+  const pct = toPct(value);
+  const update = (raw: number) => onChange(roundToQuarter(clamp(raw)));
+
+  return (
+    <div className="relative">
+      {/* Track */}
+      <div className="relative h-3 w-full rounded-full bg-zinc-800/80">
+        {/* Fill */}
+        <div
+          className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-lime-500 to-lime-400"
+          style={{ width: `${pct}%` }}
+        />
+        {/* Tacche intere */}
+        {Array.from({ length: max - min + 1 }, (_, i) => i + min).map((n) => (
+          <div
+            key={n}
+            className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 bg-white/35"
+            style={{ left: `calc(${toPct(n)}% - 1px)` }}
+          />
+        ))}
+      </div>
+
+      {/* Bubble + thumb (solo visual, senza eventi) */}
+      <div className="pointer-events-none absolute -top-12 select-none" style={{ left: `calc(${pct}% - 24px)` }}>
+        <div className="rounded-xl border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm font-bold text-white shadow-lg">
+          {formatScore(value)}
+        </div>
+      </div>
+      <div
+        className="pointer-events-none absolute -top-[10px] grid h-8 w-8 place-items-center rounded-full bg-white text-[10px] font-bold text-zinc-900 shadow-lg"
+        style={{ left: `calc(${pct}% - 16px)` }}
+      >
+        ●
+      </div>
+
+      {/* Input reale (invisibile, area ampia, sopra tutto) */}
+      <input
+        aria-label="Vote slider"
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onInput={(e) => update(parseFloat((e.target as HTMLInputElement).value))}
+        onChange={(e) => update(parseFloat((e.target as HTMLInputElement).value))}
+        className="absolute inset-0 -my-3 h-12 w-full appearance-none bg-transparent opacity-0 z-10 cursor-pointer"
+      />
+
+      {/* Min / mid / max */}
+      <div className="mt-1 flex justify-between text-xs text-zinc-400">
+        <span>{min}</span>
+        <span>{(min + max) / 2}</span>
+        <span>{max}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Barra voti con avatar sopra le tacche (riutilizzabile ovunque)
+ *  - entries: [ [nome, voto], ... ]
+ *  - avg: media (1..10) o null
+ *  - currentUser: evidenzia il tuo avatar con ring bianco
+ *  - size: 'md' | 'sm' (compact)
+ *  - showScale: mostra 1/5/10 sotto
+ */
+function VotesBarWithAvatars({
+  entries,
+  avg,
+  currentUser,
+  size = "md",
+  showScale = true,
+}: {
+  entries: [string, number][];
+  avg: number | null;
+  currentUser?: string;
+  size?: "md" | "sm";
+  showScale?: boolean;
+}) {
+  const toPct = (n: number) => ((n - 1) / 9) * 100;
+
+  // dimensioni
+  const trackH   = size === "sm" ? 8 : 16;     // px
+  const tickH    = size === "sm" ? 14 : 24;    // px
+  const avatarSz = size === "sm" ? 16 : 20;    // px
+  const stackStep= size === "sm" ? 8  : 10;    // px
+
+  const ringByScore = (s: number) =>
+    s >= 8 ? "ring-emerald-500/70" : s >= 6 ? "ring-amber-400/70" : "ring-rose-500/70";
+
+  // impilamento avatar se più persone hanno lo stesso voto
+  const stacks = new Map<string, number>();
+
+  return (
+    <div className="w-full">
+      <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
+        <span>Avg {entries.length ? `(${entries.length} votes)` : ""}</span>
+        <span>10</span>
+      </div>
+
+      {/* niente overflow hidden: gli avatar possono uscire sopra */}
+      <div
+        className="relative w-full rounded-full bg-zinc-800 overflow-visible"
+        style={{ height: trackH }}
+      >
+        {avg !== null && (
+          <div
+            className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
+            style={{ width: `${toPct(avg)}%` }}
+          />
+        )}
+
+        {entries.map(([name, rawScore]) => {
+          const score = Number(rawScore);
+          const key = score.toFixed(2);
+          const level = stacks.get(key) || 0;
+          stacks.set(key, level + 1);
+
+          const left = `calc(${toPct(score)}% - 1px)`;
+          const avatar = loadAvatarFor(name);
+          const initial = (name?.[0] || "?").toUpperCase();
+          const ring = name === currentUser ? "ring-white" : ringByScore(score);
+
+          return (
+            <div key={`${name}-${key}-${level}`} className="absolute pointer-events-none" style={{ left }}>
+              {/* lineetta */}
+              <div
+                className="absolute top-0 w-[2px] -translate-x-1/2 rounded-full bg-white/90 shadow-[0_0_0_2px_rgba(0,0,0,0.5)]"
+                style={{ height: tickH }}
+                title={formatScore(score)}
+              />
+              {/* avatar sopra la lineetta, impilato se duplicati */}
+              <div
+                className="absolute -translate-x-1/2"
+                style={{
+                  top: -(avatarSz + 4 + level * stackStep),
+                }}
+                title={`${name}: ${formatScore(score)}`}
+              >
+                {avatar ? (
+                  <img
+                    className={`rounded-full object-cover ring-2 ${ring}`}
+                    src={avatar}
+                    alt={name}
+                    style={{ width: avatarSz, height: avatarSz }}
+                  />
+                ) : (
+                  <div
+                    className={`grid place-items-center rounded-full bg-zinc-900 text-[10px] font-bold text-white ring-2 ${ring}`}
+                    style={{ width: avatarSz, height: avatarSz }}
+                  >
+                    {initial}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {showScale && (
+        <div className="mt-1 flex justify-between text-[11px] text-zinc-500">
+          <span>1</span><span>5</span><span>10</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ============== ActiveVoting ==============
 function ActiveVoting({
   movie,
@@ -1013,10 +1182,9 @@ function ActiveVoting({
   onSendVote: (score: number) => void;
   onEnd: () => void;
 }) {
-  // ---- stato voto utente
+  // Stato voto utente
   const you = ratings[currentUser];
   const hasVoted = typeof you === "number";
-
   const [openVote, setOpenVote] = React.useState(false);
   const [editMode, setEditMode] = React.useState(false);
   const [temp, setTemp] = React.useState<number>(you ?? 7);
@@ -1030,16 +1198,14 @@ function ActiveVoting({
     setEditMode(false);
   };
 
-  // ---- calcoli
+  // Derivati
   const entries = Object.entries(ratings) as [string, number][];
+  const scores = entries.map(([, n]) => Number(n));
+  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
   const sorted = entries
     .slice()
     .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]));
-
-  const scores = entries.map(([, n]) => Number(n));
-  const avg = scores.length
-    ? scores.reduce((a, b) => a + b, 0) / scores.length
-    : null;
 
   const releaseYear =
     movie?.release_year ||
@@ -1049,25 +1215,87 @@ function ActiveVoting({
     ? movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
     : "";
 
-  // ---- subcomponents (puoi spostarli in alto se già globali)
+  const poster = movie?.poster_path ? posterUrl(movie.poster_path, "w342") : "";
+
+  /* ---------- Sub-components ---------- */
+
+  // Pill “Picked by” unificata
+  function PickedByPill({ name }: { name: string }) {
+    const avatar = loadAvatarFor(name);
+    const initial = name?.[0]?.toUpperCase() || "?";
+    return (
+      <div
+        className="
+          inline-flex items-center gap-3 rounded-full
+          px-3 py-2
+          bg-[#201607] ring-1 ring-[#d8b24a]/30
+          text-[#f6e7b0] shadow-[inset_0_1px_0_rgba(255,255,255,.04)]
+        "
+        title={`Picked by: ${name}`}
+      >
+        <div className="grid h-5 w-5 place-items-center rounded-md bg-[#d8b24a] text-black">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <path d="M3 6.5 15.5 4l1 3L4 9.5l-1-3zM4 11h16a1 1 0 0 1 1 1v7H3v-7a1 1 0 0 1 1-1z" />
+          </svg>
+        </div>
+        {avatar ? (
+          <img
+            src={avatar}
+            alt={name}
+            className="h-6 w-6 rounded-full object-cover ring-2 ring-[#d8b24a]/50"
+          />
+        ) : (
+          <div className="grid h-6 w-6 place-items-center rounded-full bg-[#2e2a1f] text-[#f6e7b0] ring-2 ring-[#d8b24a]/40 text-[10px] font-bold">
+            {initial}
+          </div>
+        )}
+        <div className="leading-4 text-[11px] text-[#f6e7b0]/90">
+          <div className="-mb-0.5">Picked by</div>
+        </div>
+        <div className="ml-1 text-sm font-semibold">{name}</div>
+      </div>
+    );
+  }
+
+  // Avatar iniziale colorato per chip votanti
+  function InitialCircle({ name, score }: { name: string; score: number }) {
+    const ring =
+      score >= 8 ? "ring-emerald-500/60" :
+      score >= 6 ? "ring-amber-400/60"  :
+                   "ring-rose-500/60";
+
+    return (
+      <div
+        className={`grid h-6 w-6 place-items-center rounded-full text-[11px] font-bold ring-2 ${ring}`}
+        title={name}
+      >
+        {(name?.[0] || "?").toUpperCase()}
+      </div>
+    );
+  }
+  function VoterChip({ name, score }: { name: string; score: number }) {
+    return (
+      <div className="inline-flex items-center gap-2 rounded-2xl border border-zinc-700/80 bg-zinc-900/70 px-2.5 py-1 text-sm text-zinc-100">
+        <InitialCircle name={name} score={score} />
+        <span className="truncate max-w-[8.5rem]">{name}</span>
+        <span className="mx-1 text-zinc-500">•</span>
+        <span className="font-semibold">{formatScore(score)}</span>
+        {name === currentUser && (
+          <span className="ml-1 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-bold text-zinc-900">You</span>
+        )}
+      </div>
+    );
+  }
+
+  // Recap stile History: anello + barra con lineette
   const AvgRing = ({ value }: { value: number }) => {
-    const r = 26;
-    const c = 2 * Math.PI * r;
-    const pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
+    const r = 26, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
     return (
       <div className="relative h-16 w-16">
         <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
           <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
-          <circle
-            cx="32"
-            cy="32"
-            r={r}
-            strokeWidth="8"
-            className="fill-none stroke-lime-400"
-            strokeLinecap="round"
-            strokeDasharray={c}
-            strokeDashoffset={c - (pct / 100) * c}
-          />
+          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-lime-400"
+            strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}/>
         </svg>
         <div className="absolute inset-0 grid place-items-center text-sm font-bold">
           {formatScore(value)}
@@ -1076,180 +1304,103 @@ function ActiveVoting({
     );
   };
 
-  const VotesBar = ({ scores, avg }: { scores: number[]; avg: number | null }) => {
-    const toPct = (n: number) => ((n - 1) / 9) * 100; // 1..10 → 0..100%
-    return (
-      <div className="w-full">
-        <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-          <span>LIVE AVG{scores.length ? ` (${scores.length})` : ""}</span>
-          <span>10</span>
-        </div>
-        <div className="relative h-4 w-full overflow-hidden rounded-full bg-zinc-800">
-          {avg !== null && (
-            <div
-              className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
-              style={{ width: `${toPct(avg)}%` }}
-            />
-          )}
-          {/* lineette dei votanti */}
-          {scores.map((s, i) => (
-            <div
-              key={i}
-              className="pointer-events-none absolute top-1/2 h-6 w-[2px] -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_2px_rgba(0,0,0,0.6)]"
-              style={{ left: `calc(${toPct(s)}% - 1px)` }}
-              title={formatScore(s)}
-            />
-          ))}
-        </div>
-      </div>
-    );
-  };
-
-  const Avatar = ({ name }: { name: string }) => {
-    const initials = name
-      .split(" ")
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((s) => s[0]?.toUpperCase())
-      .join("");
-    const avatar = loadAvatarFor(name);
-    if (avatar)
-      return <img src={avatar} className="h-8 w-8 rounded-full object-cover" alt={name} />;
-    return (
-      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-white">
-        {initials || "?"}
-      </div>
-    );
-  };
-
-  const VoterChip = ({ name, score }: { name: string; score: number }) => (
-    <div className="flex items-center gap-2 rounded-2xl border border-zinc-700/70 bg-zinc-900/60 px-2.5 py-1 text-sm">
-      <Avatar name={name} />
-      <div className="min-w-0">
-        <div className="truncate text-xs text-zinc-300">
-          {name}{" "}
-          {name === currentUser && (
-            <span className="ml-1 rounded bg-white/10 px-1.5 py-[1px] text-[10px] font-semibold text-white">
-              You
-            </span>
-          )}
-        </div>
-      </div>
-      <div className="ml-2 rounded-full border border-zinc-700/70 px-2 py-0.5 text-xs font-semibold text-zinc-100">
-        {formatScore(score)}
-      </div>
-    </div>
-  );
-
-  const PickedByPill = ({ name }: { name: string }) => {
-    const initials = name?.[0]?.toUpperCase() || "?";
-    const avatar = loadAvatarFor(name);
-    return (
-      <div className="inline-flex items-center gap-2 rounded-[999px] border border-yellow-900/40 bg-amber-900/30 px-3 py-2 text-amber-200 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]">
-        <span className="text-lg">🎞️</span>
-        <span className="text-[13px] leading-none opacity-90">Picked by</span>
-        <span className="inline-flex items-center gap-2">
-          {avatar ? (
-            <img
-              src={avatar}
-              className="h-6 w-6 rounded-full object-cover ring-2 ring-amber-500/40"
-              alt={name}
-            />
-          ) : (
-            <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-800/70 text-[11px] font-bold text-amber-50 ring-2 ring-amber-500/40">
-              {initials}
-            </span>
-          )}
-          <span className="text-[13px] font-semibold text-amber-100">{name}</span>
-        </span>
-      </div>
-    );
-  };
-
+  /* ---------- Render ---------- */
   return (
-    <div className="rounded-3xl border border-zinc-800 bg-zinc-950/60 p-5">
-      {/* Header: Picked by pill + titolo */}
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        {pickedBy && <PickedByPill name={pickedBy} />}
-        <h3 className="text-xl font-bold leading-tight text-zinc-100">
-          Voting in progress · {movie?.title}
-          {releaseYear && <span className="ml-2 text-zinc-400">({releaseYear})</span>}
-        </h3>
-      </div>
+    <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 dark:border-zinc-800 dark:bg-zinc-900/60">
+      {/* Header: pill a sinistra, titolo a destra */}
+      <div className="mb-4 grid items-start gap-3 md:grid-cols-[auto,1fr]">
+        <div>{pickedBy && <PickedByPill name={pickedBy} />}</div>
+        <div>
+          <div className="text-xl font-bold">
+            Voting in progress · {movie?.title}
+            {releaseYear && <span className="ml-1 text-zinc-400">({releaseYear})</span>}
+          </div>
 
-      {/* Layout poster + info */}
-      <div className="flex flex-col gap-5 md:flex-row">
-        {movie?.poster_path && (
-          <img
-            src={posterUrl(movie.poster_path, "w342")}
-            className="h-56 w-40 flex-shrink-0 rounded-xl object-cover ring-1 ring-zinc-800"
-            alt={movie?.title}
-          />
-        )}
-
-        <div className="flex-1">
-          {/* meta badges */}
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-zinc-300">
+          {/* Meta badges */}
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600 dark:text-zinc-400">
             {Number(movie?.runtime) > 0 && (
-              <span className="rounded-full border border-zinc-700 px-2 py-0.5">⏱ {movie.runtime} min</span>
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {movie.runtime} min</span>
             )}
             {genreLine && (
-              <span className="rounded-full border border-zinc-700 px-2 py-0.5">{genreLine}</span>
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>
             )}
             {typeof movie?.imdb_rating === "number" ? (
-              <span className="rounded-full border border-zinc-700 px-2 py-0.5">
-                ★ IMDb {formatScore(movie.imdb_rating)}
-              </span>
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(movie.imdb_rating)}</span>
             ) : typeof movie?.tmdb_vote_average === "number" ? (
-              <span className="rounded-full border border-zinc-700 px-2 py-0.5">
-                ★ TMDB {formatScore(movie.tmdb_vote_average)}
-              </span>
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(movie.tmdb_vote_average)}</span>
             ) : null}
             {typeof movie?.tmdb_vote_count === "number" && movie.tmdb_vote_count > 0 && (
-              <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
                 {movie.tmdb_vote_count.toLocaleString()} votes
               </span>
             )}
           </div>
+        </div>
+      </div>
 
-          {/* descrizione */}
+      {/* Layout principale */}
+      <div className="grid gap-5 md:grid-cols-[176px,1fr]">
+        {/* Poster */}
+        <div className="flex items-start justify-center">
+          {poster ? (
+            <img
+              src={poster}
+              className="h-[264px] w-[176px] rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
+              alt={movie?.title}
+            />
+          ) : (
+            <div className="flex h-[264px] w-[176px] items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+              No poster
+            </div>
+          )}
+        </div>
+
+        {/* Right column */}
+        <div className="min-w-0">
           {movie?.overview && (
-            <p className="mb-3 text-zinc-300">{movie.overview}</p>
+            <p className="mb-3 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
+              {movie.overview}
+            </p>
           )}
 
-          {/* Blocchi votazione: ring + bar */}
-          <div className="mt-1 grid gap-3 md:grid-cols-[72px,1fr]">
-            <div className="grid place-items-center">
-              {avg !== null ? <AvgRing value={avg} /> : <div className="text-xs text-zinc-500">No votes</div>}
+          {/* Recap voti – stile history */}
+          <div className="mb-3">
+            <div className="flex items-center gap-6">
+              {avg !== null && <AvgRing value={avg} />}
+              <div className="flex-1">
+                <VotesBarWithAvatars
+                  entries={entries}       // <-- Object.entries(ratings)
+                  avg={avg}
+                  currentUser={currentUser}
+                />
+              </div>
             </div>
-            <VotesBar scores={scores} avg={avg} />
           </div>
 
-          {/* Stato + azioni voto */}
-          <div className="mt-3">
-            {!hasVoted ? (
-              !openVote ? (
+          {/* VOTE / EDIT */}
+          {!hasVoted ? (
+            <div className="mt-2">
+              {!openVote ? (
                 <button
-                  className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700"
+                  className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
                   onClick={() => setOpenVote(true)}
                 >
                   Vote
                 </button>
               ) : (
-                <div className="mt-2 rounded-2xl border border-zinc-800 p-3">
-                  <div className="mb-2 text-sm text-zinc-300">Choose your score</div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    step={0.25}
-                    value={temp}
-                    onChange={(e) => setTemp(roundToQuarter(parseFloat((e.target as HTMLInputElement).value)))}
-                    className="w-full"
-                  />
-                  <div className="mt-2 flex items-center gap-2">
+                <div className="mt-2 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-sm text-zinc-300">Choose your score</div>
+                    <div className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
+                      {formatScore(temp)}
+                    </div>
+                  </div>
+
+                  <ScoreSlider value={temp} onChange={setTemp} />
+
+                  <div className="mt-3 flex items-center gap-2">
                     <button
-                      className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700"
+                      className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
                       onClick={submit}
                     >
                       Submit vote
@@ -1263,71 +1414,72 @@ function ActiveVoting({
                     >
                       Cancel
                     </button>
-                    <div className="ml-auto text-sm font-semibold text-zinc-200">
-                      {formatScore(temp)}
-                    </div>
+                    <span className="ml-auto text-sm font-semibold text-zinc-200">{formatScore(temp)}</span>
                   </div>
                 </div>
-              )
-            ) : !editMode ? (
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-3">
-                <div className="flex items-center gap-2 text-sm text-zinc-300">
-                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-                  <b>Vote saved.</b> Please wait for others…
-                </div>
-                <button
-                  className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
-                  onClick={() => {
-                    setTemp(you ?? 7);
-                    setEditMode(true);
-                  }}
-                >
-                  Edit vote
-                </button>
-              </div>
-            ) : (
-              <div className="mt-2 rounded-2xl border border-zinc-800 p-3">
-                <div className="mb-2 text-sm text-zinc-300">
-                  Edit your vote <span className="text-zinc-500">(current: {formatScore(you)})</span>
-                </div>
-                <input
-                  type="range"
-                  min={1}
-                  max={10}
-                  step={0.25}
-                  value={temp}
-                  onChange={(e) => setTemp(roundToQuarter(parseFloat((e.target as HTMLInputElement).value)))}
-                  className="w-full"
-                />
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700"
-                    onClick={submit}
-                  >
-                    Save
-                  </button>
+              )}
+            </div>
+          ) : (
+            <>
+              {!editMode ? (
+                <div className="mt-2 flex items-center justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-3">
+                  <div className="flex items-center gap-2 text-sm text-zinc-300">
+                    <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+                    <span>
+                      <b>Vote saved.</b> Please wait for others…
+                    </span>
+                  </div>
                   <button
                     className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
                     onClick={() => {
-                      setEditMode(false);
                       setTemp(you ?? 7);
+                      setEditMode(true);
                     }}
                   >
-                    Cancel
+                    Edit vote
                   </button>
-                  <div className="ml-auto text-sm font-semibold text-zinc-200">
-                    {formatScore(temp)}
+                </div>
+              ) : (
+                <div className="mt-2 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-sm text-zinc-300">
+                      Edit your vote{" "}
+                      <span className="text-zinc-500">(current: {formatScore(you)})</span>
+                    </div>
+                    <div className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
+                      {formatScore(temp)}
+                    </div>
+                  </div>
+
+                  <ScoreSlider value={temp} onChange={setTemp} />
+
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                      onClick={submit}
+                    >
+                      Save
+                    </button>
+                    <button
+                      className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
+                      onClick={() => {
+                        setEditMode(false);
+                        setTemp(you ?? 7);
+                      }}
+                    >
+                      Cancel
+                    </button>
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </>
+          )}
 
           {/* Live votes list */}
           <div className="mt-5">
-            <div className="mb-2 text-sm font-semibold text-zinc-200">Live votes</div>
+            <div className="mb-2 text-sm font-semibold">Live votes</div>
             {sorted.length === 0 ? (
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">
+              <div className="rounded-2xl border bg-white p-3 text-sm text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                 No votes yet — be the first!
               </div>
             ) : (
@@ -1339,8 +1491,9 @@ function ActiveVoting({
             )}
           </div>
 
+          {/* End voting */}
           <div className="mt-5">
-            <button className="rounded-xl border border-zinc-700 px-4 py-2 text-zinc-200" onClick={onEnd}>
+            <button className="rounded-xl border px-4 py-2 dark:border-zinc-700" onClick={onEnd}>
               End voting
             </button>
           </div>
@@ -1357,7 +1510,6 @@ function ActiveVoting({
 // ─────────────────────────────────────────────────────────────────────────────
 
 
-// ---- Avatar con ring colorato in base al voto (verde / ambra / rosso)
 function ChipAvatar({ name, score }: { name: string; score: number }) {
   const avatar = loadAvatarFor(name);
   const ring =
@@ -1490,59 +1642,6 @@ function MetaPill({ children, title }: { children: React.ReactNode; title?: stri
     >
       {children}
     </span>
-  );
-}
-
-function PickedByPill({ name }: { name: string }) {
-  const avatar =
-    (() => {
-      try {
-        const raw = localStorage.getItem(`cn_profile_${name}`);
-        return raw ? JSON.parse(raw)?.avatar || null : null;
-      } catch {
-        return null;
-      }
-    })() || null;
-
-  const initial = (name || "?").trim()[0]?.toUpperCase() || "?";
-
-  return (
-    <div
-      className="
-        inline-flex items-center gap-3 rounded-full
-        px-3 py-2
-        bg-[#201607] ring-1 ring-[#d8b24a]/30
-        text-[#f6e7b0] shadow-[inset_0_1px_0_rgba(255,255,255,.04)]
-      "
-    >
-      {/* clapper icon */}
-      <div className="grid h-5 w-5 place-items-center rounded-md bg-[#d8b24a] text-black">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M3 6.5 15.5 4l1 3L4 9.5l-1-3zM4 11h16a1 1 0 0 1 1 1v7H3v-7a1 1 0 0 1 1-1z" />
-        </svg>
-      </div>
-
-      {/* avatar + 'Picked / by' */}
-      <div className="flex items-center gap-2">
-                <div className="leading-4 text-[11px] text-[#f6e7b0]/90">
-          <div className="-mb-0.5">Picked by</div>
-        </div>
-        {avatar ? (
-          <img
-            src={avatar}
-            alt={name}
-            className="h-6 w-6 rounded-full object-cover ring-2 ring-[#d8b24a]/50"
-          />
-        ) : (
-          <div className="grid h-6 w-6 place-items-center rounded-full bg-[#2e2a1f] text-[#f6e7b0] ring-2 ring-[#d8b24a]/40 text-[10px] font-bold">
-            {initial}
-          </div>
-        )}
-      </div>
-
-      {/* nome */}
-      <div className="ml-1 text-sm font-semibold">{name}</div>
-    </div>
   );
 }
 
@@ -1695,7 +1794,7 @@ function HistoryCardExtended({
       <div className="mb-3 flex items-center gap-3">
         {v.picked_by && (
           <>
-            <PickedByPill name={v.picked_by} />
+            <PickedByBadge name={v.picked_by} />
             <div className="mx-1 text-gray-300">•</div>
           </>
         )}
@@ -1760,9 +1859,13 @@ function HistoryCardExtended({
 
           <div className="flex items-center gap-4">
             {avg !== null && <AvgRing value={avg} />}
-            <VotesBar scores={scores} avg={avg} />
+            <div className="flex-1">
+              <VotesBarWithAvatars
+                entries={entries}   // <-- const entries = Object.entries(ratings)
+                avg={avg}
+              />
+            </div>
           </div>
-
           {entries.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {Object.entries(ratings)
@@ -1807,7 +1910,7 @@ function HistoryCardCompact({
       <div className="flex flex-wrap items-center gap-2">
         {v.picked_by && (
           <>
-            <PickedByPill name={v.picked_by} />
+            <PickedByBadge name={v.picked_by} />
             <div className="mx-1 text-gray-300">•</div>
           </>
         )}
