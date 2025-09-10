@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { createPortal } from "react-dom";
 
 /**
  * Circo Cinema – complete app (with Dark Mode toggle)
@@ -103,7 +104,7 @@ async function loadHistoryFromStorage(): Promise<any[] | null> {
   try {
     const { data, error } = await sb.storage
       .from(STORAGE_BUCKET)
-      .download(STORAGE_HISTORY_KEY);
+      .download(STORAGE_LIVE_HISTORY_KEY);
     if (error || !data) return null;
     const text = await data.text();
     const parsed = JSON.parse(text);
@@ -174,7 +175,7 @@ async function saveHistoryToStorage(list: any[]): Promise<{ error: any | null }>
     const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
     const { error } = await sb.storage
       .from(STORAGE_BUCKET)
-      .upload(STORAGE_HISTORY_KEY, blob, { upsert: true, contentType: "application/json" });
+      .upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true, contentType: "application/json" });
     if (error) {
       console.error("[saveHistoryToStorage] upload error:", error);
       return { error };
@@ -1305,6 +1306,7 @@ function ActiveVoting({
   ratings,
   onSendVote,
   onEnd,
+  onMetaResolved, // NEW (opzionale)
 }: {
   movie: any;
   pickedBy?: string;
@@ -1312,6 +1314,7 @@ function ActiveVoting({
   ratings: Record<string, number>;
   onSendVote: (score: number) => void;
   onEnd: () => void;
+  onMetaResolved?: (nextMovie: any) => void; // NEW
 }) {
   // Stato voto utente
   const you = ratings[currentUser];
@@ -1693,24 +1696,31 @@ const scoreGrad = (n: number) =>
   `linear-gradient(90deg, hsl(${scoreHue(n)} 70% 45%) 0%, hsl(${scoreHue(n)} 70% 55%) 100%)`;
 const scorePct = (n: number) => `${((clamp10(n) - 1) / 9) * 100}%`;
 
-function ScoreDonut({ value, label }: { value: number; label?: string }) {
-  const pct = (clamp10(value) - 1) / 9;
-  const hue = scoreHue(value);
+export function ScoreDonut({ value, size = 64 }: { value: number; size?: number }) {
+  // style identico al tuo AvgRing (r=26, stroke=8 su viewBox 64)
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
+
   return (
-    <div className="flex items-center gap-3">
-      <div
-        className="relative h-16 w-16 rounded-full p-[6px]"
-        style={{
-          background: `conic-gradient(hsl(${hue} 80% 50%) ${pct * 360}deg, rgba(0,0,0,0.12) 0deg)`,
-        }}
-        aria-label={label || `Average ${formatScore(value)}`}
-        title={label || `Average ${formatScore(value)}`}
-      >
-        <div className="flex h-full w-full items-center justify-center rounded-full bg-white text-sm font-bold tabular-nums dark:bg-zinc-950">
-          {formatScore(value)}
-        </div>
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg viewBox="0 0 64 64" className="h-full w-full -rotate-90">
+        <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
+        <circle
+          cx="32"
+          cy="32"
+          r={r}
+          strokeWidth="8"
+          className="fill-none stroke-lime-400"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c - (pct / 100) * c}
+        />
+      </svg>
+      {/* numero centrale — bianco in dark mode */}
+      <div className="absolute inset-0 grid place-items-center text-sm font-bold text-zinc-900 dark:text-white">
+        {formatScore(value)}
       </div>
-      {label && <div className="text-sm opacity-70">{label}</div>}
     </div>
   );
 }
@@ -1990,12 +2000,9 @@ function HistoryCardExtended({
           </p>
 
           <div className="flex items-center gap-4">
-            {avg !== null && <AvgRing value={avg} />}
+            {avg !== null && <ScoreDonut value={avg} />}
             <div className="flex-1">
-              <VotesBarWithAvatars
-                entries={entries}   // <-- const entries = Object.entries(ratings)
-                avg={avg}
-              />
+              <VotesBarWithAvatars entries={entries} avg={avg} />
             </div>
           </div>
           {entries.length > 0 && (
@@ -2009,33 +2016,6 @@ function HistoryCardExtended({
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-/** ───────────────────────────────────────────────────────────────────
- *  Poster grid compatta + Modal dettagli
- *  ----------------------------------------------------------------- */
-
-function HistoryPosterGrid({
-  items,
-  onOpen,
-  onResolve, // ⬅️ nuovo: chiama updateViewingMovie(id, nextMovie)
-}: {
-  items: any[];
-  onOpen: (v: any) => void;
-  onResolve?: (viewingId: any, nextMovie: any) => void;
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-      {items.map((v) => (
-        <PosterCell
-          key={v.id}
-          v={v}
-          onClick={() => onOpen(v)}
-          onResolved={(nextMovie) => onResolve?.(v.id, nextMovie)}
-        />
-      ))}
     </div>
   );
 }
@@ -2152,30 +2132,28 @@ function PosterCell({
 
 
 /** Modal dettagli: poster + overview + meta + recap voti */
+
 function ViewingModal({
   v,
   onClose,
   onEdit,
+  onResolve,
+  currentUser,
 }: {
   v: any | null;
   onClose: () => void;
-  onEdit?: (viewingId: any) => void;
+  onEdit?: (id: any) => void;
+  onResolve?: (id: any, nextMovie: any) => void;
+  currentUser?: string;
 }) {
-  React.useEffect(() => {
-    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && v && onClose();
-    window.addEventListener("keydown", onEsc);
-    return () => window.removeEventListener("keydown", onEsc);
-  }, [v, onClose]);
-
   if (!v) return null;
 
-  const ratings = (v.ratings || {}) as Record<string, number>;
-  const entries = Object.entries(ratings) as [string, number][];
-  const scores = entries.map(([, n]) => Number(n));
-  const avg =
-    scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  // ---- META ----
+  const meta = useLazyMetaForViewing(v, onResolve);
 
-  const releaseYear =
+  // ---- DATI FILM ----
+  const title = v?.movie?.title || "Untitled";
+  const year =
     v?.movie?.release_year ||
     (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
 
@@ -2183,155 +2161,174 @@ function ViewingModal({
     ? v.movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
     : "";
 
-  const poster = v?.movie?.poster_path ? posterUrl(v.movie.poster_path, "w342") : "";
-  const overview = (v?.movie?.overview || "").trim();
+  const runtime =
+    typeof v?.movie?.runtime === "number" && v.movie.runtime > 0
+      ? v.movie.runtime
+      : null;
 
-  // Helpers grafici (anello + barra) come nella history
-  const AvgRing = ({ value }: { value: number }) => {
-    const r = 26, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
-    return (
-      <div className="relative h-16 w-16">
-        <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-lime-400"
-                  strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}/>
-        </svg>
-        <div className="absolute inset-0 grid place-items-center text-sm font-bold">
-          {formatScore(value)}
-        </div>
-      </div>
-    );
-  };
-  const VotesBar = ({ scores, avg }: { scores: number[]; avg: number | null }) => {
-    const toPct = (n: number) => ((n - 1) / 9) * 100;
-    return (
-      <div className="w-full">
-        <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-          <span>Avg {scores.length ? `(${scores.length} votes)` : ""}</span>
-          <span>10</span>
-        </div>
-        <div className="relative h-4 w-full overflow-hidden rounded-full bg-zinc-800">
-          {avg !== null && (
-            <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
-                 style={{ width: `${toPct(avg)}%` }} />
-          )}
-          {scores.map((s, i) => (
-            <div key={i}
-                 className="pointer-events-none absolute top-1/2 h-6 w-[2px] -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_2px_rgba(0,0,0,0.6)]"
-                 style={{ left: `calc(${toPct(s)}% - 1px)` }}
-                 title={formatScore(s)} />
-          ))}
-        </div>
-        <div className="mt-1 flex justify-between text-[11px] text-zinc-500">
-          <span>1</span><span>5</span><span>10</span>
-        </div>
-      </div>
-    );
-  };
+  const imdbRating =
+    typeof v?.movie?.imdb_rating === "number" ? v.movie.imdb_rating : null;
 
-  return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="w-full max-w-4xl overflow-hidden rounded-2xl border bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+  const tmdbAvg =
+    typeof v?.movie?.tmdb_vote_average === "number"
+      ? v.movie.tmdb_vote_average
+      : null;
+
+  const tmdbCount =
+    typeof v?.movie?.tmdb_vote_count === "number"
+      ? v.movie.tmdb_vote_count
+      : null;
+
+  const poster = meta?.poster_path ? posterUrl(meta.poster_path, "w342") : "";
+  const overview = (meta?.overview || "").trim();
+
+  // ---- VOTI ----
+  const ratings = (v?.ratings || {}) as Record<string, number>;
+  const entries = Object.entries(ratings) as [string, number][];
+  const scores = entries.map(([, n]) => Number(n));
+  const avg =
+    scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
+// ---- Solo ESC per chiudere ----
+React.useEffect(() => {
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") onClose();
+  };
+  window.addEventListener("keydown", onKey);
+  return () => window.removeEventListener("keydown", onKey);
+}, [onClose]);
+
+  // ---- RENDER ----
+  return createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-5xl overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900 shadow-xl">
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 border-b p-4 dark:border-zinc-800">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              {v.picked_by && <PickedByBadge name={v.picked_by} />}
-              <h3 className="text-lg font-semibold leading-tight">
-                <span className="break-words">{v?.movie?.title || "Untitled"}</span>
-                {releaseYear && <span className="ml-2 text-gray-500">({releaseYear})</span>}
-              </h3>
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
-              {Number(v?.movie?.runtime) > 0 && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {v.movie.runtime} min</span>}
-              {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
-              {typeof v?.movie?.imdb_rating === "number" ? (
-                <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(v.movie.imdb_rating)}</span>
-              ) : typeof v?.movie?.tmdb_vote_average === "number" ? (
-                <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(v.movie.tmdb_vote_average)}</span>
-              ) : null}
-              {typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0 && (
-                <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                  {v.movie.tmdb_vote_count.toLocaleString()} votes
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {onEdit && (
-              <button
-                className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"
-                onClick={() => onEdit(v.id)}
-              >
-                Edit
-              </button>
-            )}
-            <button className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700" onClick={onClose}>
-              Close
+        <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
+          {v?.picked_by && <PickedByBadge name={v.picked_by} />}
+          <div className="mx-2 text-zinc-600">•</div>
+          <h3 className="min-w-0 flex-1 truncate text-lg font-semibold text-zinc-100">
+            {title} {year ? <span className="text-zinc-400">({year})</span> : null}
+          </h3>
+          {onEdit && (
+            <button
+              className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => onEdit(v.id)}
+            >
+              Edit
             </button>
-          </div>
+          )}
+          <button
+            className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800"
+            onClick={onClose}
+          >
+            Close
+          </button>
         </div>
 
         {/* Body */}
-        <div className="grid gap-4 p-4 md:grid-cols-[200px,1fr]">
+        <div className="grid gap-5 px-4 py-4 md:grid-cols-[220px,1fr]">
+          {/* Poster */}
           <div className="flex items-start justify-center">
             {poster ? (
               <img
                 src={poster}
-                alt={v?.movie?.title}
-                className="h-[300px] w-[200px] rounded-xl border object-cover dark:border-zinc-700"
+                alt={title}
+                className="h-[330px] w-[220px] rounded-2xl border border-zinc-700 object-cover"
               />
             ) : (
-              <div className="flex h-[300px] w-[200px] items-center justify-center rounded-xl border text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+              <div className="flex h-[330px] w-[220px] items-center justify-center rounded-2xl border border-dashed border-zinc-700 text-sm text-zinc-400">
                 No poster
               </div>
             )}
           </div>
 
+          {/* Testo + meta + voti */}
           <div className="min-w-0">
+            {/* META CHIPS (uguali alla extended) */}
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              {year && (
+                <span className="rounded-full border border-zinc-700 px-2 py-0.5">📅 {year}</span>
+              )}
+              {runtime && (
+                <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                  ⏱ {runtime} min
+                </span>
+              )}
+              {genreLine && (
+                <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                  {genreLine}
+                </span>
+              )}
+              {imdbRating != null ? (
+                <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                  ★ IMDb {formatScore(imdbRating)}
+                </span>
+              ) : tmdbAvg != null ? (
+                <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                  ★ TMDB {formatScore(tmdbAvg)}
+                </span>
+              ) : null}
+              {tmdbCount ? (
+                <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                  {tmdbCount.toLocaleString()} votes
+                </span>
+              ) : null}
+            </div>
+
+            {/* Overview */}
             {overview && (
-              <p className="mb-3 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
+              <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-zinc-200">
                 {overview}
               </p>
             )}
 
-            <div className="mb-3 flex items-center gap-6">
-              {avg !== null && <AvgRing value={avg} />}
+            {/* Donut + Avg + Barra con avatar */}
+            <div className="mb-3 flex items-center gap-4">
+              {avg !== null && (
+                <div className="flex items-center gap-3">
+                  {/* ScoreDonut con testo bianco in dark mode */}
+                  <ScoreDonut value={avg} />
+                  <div className="text-xs text-zinc-400">
+                    Avg {entries.length ? `(${entries.length} votes)` : ""}
+                  </div>
+                </div>
+              )}
               <div className="flex-1">
-                <VotesBar scores={scores} avg={avg} />
+                <VotesBarWithAvatars
+                  entries={entries}
+                  avg={avg}
+                  currentUser={currentUser}
+                  showScale
+                />
               </div>
             </div>
 
+            {/* Chips votanti */}
             {entries.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-2 flex flex-wrap gap-2">
                 {entries
-                  .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
+                  .sort(
+                    (a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0])
+                  )
                   .map(([name, score]) => (
-                    <span
-                      key={name}
-                      className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs shadow-sm
-                                 border-gray-200 bg-white dark:border-zinc-700 dark:bg-zinc-900"
-                      title={`${name}: ${formatScore(score)}`}
-                    >
-                      <span className="inline-block h-2 w-2 rounded-full bg-lime-400" />
-                      <span className="truncate max-w-[9rem]">{name}</span>
-                      <b className="tabular-nums">{formatScore(score)}</b>
-                    </span>
+                    <VoterChip key={name} name={name} score={Number(score)} />
                   ))}
               </div>
             )}
           </div>
         </div>
       </div>
-    </div>
+
+      {/* overlay click per chiudere */}
+      <button
+        className="fixed inset-0 -z-10 cursor-auto"
+        onClick={onClose}
+        aria-label="Close overlay"
+      />
+    </div>,
+    document.body
   );
 }
-
 
 function HistoryFilters({
   pickers,
@@ -2460,39 +2457,9 @@ function Profile({ user, history, onAvatarSaved }: { user: string; history: any[
                 Change image
                 <input
                   type="file"
-                  accept="application/json"
+                  accept="image/*"
                   className="hidden"
-                  onChange={(e) => {
-                    const inputEl = e.currentTarget;
-                    const f = inputEl.files?.[0];
-                    if (!f) return;
-
-                    importHistoryFromFile(f, async (list) => {
-                      try {
-                        if (sb) {
-                          // 1) scrivi SOLO il LIVE
-                          const { error: upErr } = await saveLiveHistoryToStorage(list);
-                          // 2) aggiorna anche cn_state (realtime)
-                          const { error: stErr } = await saveSharedState({});
-
-                          // 3) update ottimistico UI
-                          setHistory(list);
-
-                          if (upErr || stErr) {
-                            alert("Import completato con avvisi (vedi console).");
-                          } else {
-                            alert(`Import OK: ${list.length} voci salvate su history_live.json + cn_state`);
-                          }
-                        } else {
-                          lsSetJSON(K_VIEWINGS, list);
-                          setHistory(list);
-                          alert(`Import OK: ${list.length} voci caricate in locale`);
-                        }
-                      } finally {
-                        inputEl.value = "";
-                      }
-                    });
-                  }}
+                  onChange={onFile}
                 />
 
               </label>
@@ -2881,7 +2848,111 @@ function importHistoryFromFile(
   reader.readAsText(file);
 }
 
-  
+  function useLazyMetaForViewing(
+  viewing: any | null,
+  onMetaResolved?: (viewingId: any, nextMovie: any) => void
+) {
+  const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string } | null>(null);
+
+  React.useEffect(() => {
+    if (!viewing) return;
+    const base = {
+      poster_path: viewing?.movie?.poster_path,
+      overview: (viewing?.movie?.overview || "").trim(),
+    };
+    setMeta(base);
+
+    const title = (viewing?.movie?.title || "").trim();
+    if (!title) return;
+    if (base.poster_path && base.overview) return;
+
+    const cache = getMetaCache();
+    const cached = cache[title];
+    if (cached && (cached.poster_path || cached.overview)) {
+      const merged = {
+        poster_path: base.poster_path || cached.poster_path,
+        overview: base.overview || cached.overview,
+      };
+      setMeta(merged);
+      if ((!base.poster_path && merged.poster_path) || (!base.overview && merged.overview)) {
+        onMetaResolved?.(viewing.id, { ...viewing.movie, ...merged });
+      }
+      return;
+    }
+
+    (async () => {
+      const fetched = await fetchMetaForTitle(title);
+      if (!fetched) return;
+      const merged = {
+        poster_path: base.poster_path || fetched.poster_path,
+        overview: base.overview || fetched.overview,
+      };
+      setMeta(merged);
+      const c = getMetaCache();
+      c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
+      setMetaCache(c);
+      if ((!base.poster_path && merged.poster_path) || (!base.overview && merged.overview)) {
+        onMetaResolved?.(viewing.id, { ...viewing.movie, ...merged });
+      }
+    })();
+  }, [viewing?.id]);
+
+  return meta;
+}
+
+function HistoryPosterGrid({
+  items,
+  onOpen,
+  onResolve,
+}: {
+  items: any[];
+  onOpen: (v: any) => void;
+  onResolve?: (id: any, nextMovie: any) => void;
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      {items.map((v) => (
+        <HistoryPosterTile key={v.id} v={v} onClick={() => onOpen(v)} onResolve={onResolve} />
+      ))}
+    </div>
+  );
+}
+
+function HistoryPosterTile({
+  v,
+  onClick,
+  onResolve,
+}: {
+  v: any;
+  onClick: () => void;
+  onResolve?: (id: any, nextMovie: any) => void;
+}) {
+  const meta = useLazyMetaForViewing(v, onResolve);
+  const poster = meta?.poster_path ? posterUrl(meta.poster_path, "w342") : "";
+
+  return (
+    <button
+      onClick={onClick}
+      className="group relative overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/40 shadow-sm transition hover:shadow-md"
+      style={{ aspectRatio: "2/3" }}
+      title={v?.movie?.title || ""}
+    >
+      {poster ? (
+        <img src={poster} alt={v?.movie?.title} className="h-full w-full object-cover transition group-hover:scale-[1.02]" />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-sm text-zinc-400">No poster</div>
+      )}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 rounded-t-xl bg-gradient-to-t from-black/60 to-transparent p-2">
+        <div className="line-clamp-1 text-left text-[13px] font-medium text-white drop-shadow">
+          {v?.movie?.title}
+          {v?.movie?.release_year ? <span className="ml-1 text-zinc-300">({v.movie.release_year})</span> : null}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+
 
 // ============================
 // App
@@ -3600,30 +3671,38 @@ useEffect(() => {
     });
 
     return historyMode === "compact" ? (
-      <>
-          <HistoryPosterGrid
-            items={L}
-            onOpen={setOpenViewing}
-            onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
-          />        <ViewingModal
-          v={openViewing}
-          onClose={() => setOpenViewing(null)}
-          onEdit={(id) => {
-            setEditingViewing({ id, title: L.find((x) => x.id === id)?.movie?.title || "" });
-            setOpenViewing(null);
-          }}
-        />
-      </>
-    ) : (
-      L.map((v) => (
-        <HistoryCardExtended
-          key={v.id}
-          v={v}
-          onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
-          onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
-        />
-      ))
-    );
+  <>
+    <HistoryPosterGrid
+  items={L}
+  onOpen={setOpenViewing} // passa l'oggetto viewing, non l'id
+  onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+/>
+
+    <ViewingModal
+  v={openViewing}
+  onClose={() => setOpenViewing(null)}
+  onEdit={(id) => {
+    setEditingViewing({
+      id,
+      title: L.find((x) => x.id === id)?.movie?.title || "",
+    });
+    setOpenViewing(null);
+  }}
+  onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+/>
+
+  </>
+) : (
+  L.map((v) => (
+    <HistoryCardExtended
+      key={v.id}
+      v={v}
+      onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
+      onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+    />
+  ))
+);
+
   })()}
 </div>
 
