@@ -39,34 +39,15 @@ import {
   loadAvatarFor,
 } from "./localStorage";
 
-import {
-  ScoreDonut,
-} from "./Components/UI/ScoreDonut";
-
-import {
-  VotesBar,
-} from "./Components/UI/VotesBar";
-
-import {
-  VoterChip,
-} from "./Components/UI/VoterChip";
-
-
-import {
-  Stats,
-} from "./Pages/Stats";
-
-import {
-  Profile,
-} from "./Pages/Profile";
-
-
-import {
-  formatScore,
-} from "./Utils/Utils";
-
+import { ScoreDonut } from "./Components/UI/ScoreDonut";
+import { VotesBar } from "./Components/UI/VotesBar";
 import { PickedByBadge } from "./Components/UI/PickedByBadge";
-import { HistoryCardExtended } from "./Components/UI/HistoryCardExtended";
+import { Card } from "./Components/UI/Card";
+import { VoterChip } from "./Components/UI/VoterChip";
+import { Stats } from "./Pages/Stats";
+import { formatScore } from "./Utils/Utils";
+import { HistoryCardExtended } from "./Components/UI/HistoryCardExtended"; 
+import { Profile } from "./Pages/Profile";
 
 function formatCompact(n: number) {
   if (n < 1000) return String(n);
@@ -107,18 +88,6 @@ function applyTheme(theme: Theme) {
   if (theme === "dark") root.classList.add("dark");
   else root.classList.remove("dark");
   localStorage.setItem(K_THEME, theme);
-}
-
-// UI primitives
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div
-      className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm 
-                  dark:border-zinc-800 dark:bg-zinc-900/60 ${className}`}
-    >
-      {children}
-    </div>
-  );
 }
 
 function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
