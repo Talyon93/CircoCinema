@@ -7,22 +7,26 @@ import {
   formatScore,
 } from "../../Utils/Utils";
 
+import { AvatarInline } from "./Avatar";
+
 export function VotesBar({
   entries,
   avg,
   currentUser,
   size = "md",
   showScale = true,
+  showHeader = true,
 }: {
   entries: [string, number][];
   avg: number | null;
   currentUser?: string;
   size?: "sm" | "md";
   showScale?: boolean;
+  showHeader?: boolean;
 }) {
   const toPct = (n: number) => ((Number(n) - 1) / 9) * 100;
   const BADGE_SHIFT = 0.5;
-  // dimensioni
+
   const trackH    = size === "sm" ? 8  : 16;
   const tickH     = size === "sm" ? 14 : 24;
   const avatarSz  = size === "sm" ? 18 : 22;
@@ -31,7 +35,6 @@ export function VotesBar({
   const ringByScore = (s: number) =>
     s >= 8 ? "ring-emerald-500/70" : s >= 6 ? "ring-amber-400/70" : "ring-rose-500/70";
 
-  // misura track per soglia in px -> %
   const ref = React.useRef<HTMLDivElement>(null);
   const [w, setW] = React.useState(0);
   React.useLayoutEffect(() => {
@@ -43,7 +46,6 @@ export function VotesBar({
     return () => ro.disconnect();
   }, []);
 
-  // punti ordinati
   const points = React.useMemo(
     () =>
       entries
@@ -51,16 +53,14 @@ export function VotesBar({
           name,
           score: Number(score),
           pct: toPct(Number(score)),
-          avatar: loadAvatarFor(name),
         }))
         .sort((a, b) => a.pct - b.pct),
     [entries]
   );
 
-  // cluster per vicinanza orizzontale
   const minPct = React.useMemo(() => {
-    if (!w) return 1.4; // fallback
-    const minPx = Math.max(avatarSz * 0.9, 16); // distanza minima tra cluster
+    if (!w) return 1.4;
+    const minPx = Math.max(avatarSz * 0.9, 16);
     return (minPx / w) * 100;
   }, [w, avatarSz]);
 
@@ -84,28 +84,26 @@ export function VotesBar({
     return out;
   }, [points, minPct]);
 
-  // util: rappresentante del cluster (preferisci l'utente corrente, altrimenti il più alto, tie -> alfabetico)
   function pickRep(c: Cluster) {
     const meIdx = currentUser ? c.people.findIndex(p => p.name === currentUser) : -1;
     if (meIdx >= 0) return c.people[meIdx];
-    return c.people
-      .slice()
-      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))[0];
+    return c.people.slice().sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))[0];
   }
 
   return (
     <div className="w-full">
-      <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-        <span>Avg {entries.length ? `(${entries.length} votes)` : ""}</span>
-        <span>10</span>
-      </div>
+      {showHeader && (
+        <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
+          <span>Avg {entries.length ? `(${entries.length} votes)` : ""}</span>
+          <span>10</span>
+        </div>
+      )}
 
       <div
         ref={ref}
         className="relative w-full overflow-visible rounded-full bg-zinc-800"
         style={{ height: trackH }}
       >
-        {/* riempimento fino alla media */}
         {avg !== null && (
           <div
             className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
@@ -113,7 +111,6 @@ export function VotesBar({
           />
         )}
 
-        {/* cluster */}
         {clusters.map((c, i) => {
           const rep = pickRep(c);
           const others = c.people.length - 1;
@@ -126,32 +123,20 @@ export function VotesBar({
 
           return (
             <div key={i} className="absolute pointer-events-none" style={{ left }}>
-              {/* tick del cluster */}
               <div
                 className="absolute top-0 w-[2px] -translate-x-1/2 rounded-full bg-white/90 shadow-[0_0_0_2px_rgba(0,0,0,0.5)]"
                 style={{ height: tickH }}
               />
-              {/* avatar rappresentante + badge count */}
               <div
                 className="absolute -translate-x-1/2"
                 style={{ top: -(avatarSz + 6) }}
                 title={tooltip}
               >
-                {rep.avatar ? (
-                  <img
-                    src={rep.avatar}
-                    alt={rep.name}
-                    className={`rounded-full object-cover ring-2 ${ring}`}
-                    style={{ width: avatarSz, height: avatarSz }}
-                  />
-                ) : (
-                  <div
-                    className={`grid place-items-center rounded-full bg-zinc-900 text-[10px] font-bold text-white ring-2 ${ring}`}
-                    style={{ width: avatarSz, height: avatarSz }}
-                  >
-                    {(rep.name?.[0] || "?").toUpperCase()}
-                  </div>
-                )}
+                <AvatarInline
+                  name={rep.name}
+                  size={avatarSz}
+                  ringClassName={`ring-2 ${ring}`}
+                />
 
                 {others > 0 && (
                   <div

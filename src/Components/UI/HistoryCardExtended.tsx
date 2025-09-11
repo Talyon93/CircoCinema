@@ -3,18 +3,8 @@ import { tmdbDetails, tmdbSearch, omdbRatingFromImdbId, mergeMovie, fetchMetaFor
 
 // LocalStorage helpers + costanti chiave
 import {
-  K_USER,
-  K_VIEWINGS,
-  K_ACTIVE_VOTE,
-  K_ACTIVE_RATINGS,
-  K_PROFILE_PREFIX,
-  K_TMDB_CACHE,
-  K_THEME,
-  lsGetJSON,
-  lsSetJSON,
   getMetaCache,
   setMetaCache,
-  loadAvatarFor,
 } from "../../localStorage";
 
 import { ScoreDonut } from "./ScoreDonut";

@@ -48,6 +48,7 @@ import { Stats } from "./Pages/Stats";
 import { formatScore } from "./Utils/Utils";
 import { HistoryCardExtended } from "./Components/UI/HistoryCardExtended"; 
 import { Profile } from "./Pages/Profile";
+import { ChipAvatar, Avatar, AvatarInline} from "./Components/UI/Avatar"; 
 
 function formatCompact(n: number) {
   if (n < 1000) return String(n);
@@ -442,35 +443,6 @@ function StartVoteCard({
         </div>
       </div>
     </Card>
-  );
-}
-
-// Voting (with Edit vote)
-function Avatar({ name }: { name: string }) {
-  const initials = name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((s) => s[0]?.toUpperCase())
-    .join("");
-  const avatar = loadAvatarFor(name);
-  if (avatar) return <img src={avatar} className="h-8 w-8 rounded-full object-cover" alt={name} />;
-  return <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold">{initials || "?"}</div>;
-}
-
-function AvatarInline({ name }: { name: string }) {
-  const avatar = loadAvatarFor(name);
-  const initials = name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((s) => s[0]?.toUpperCase())
-    .join("");
-  if (avatar) return <img src={avatar} className="h-8 w-8 rounded-full object-cover" alt={name} />;
-  return (
-    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold dark:bg-zinc-800">
-      {initials || "?"}
-    </div>
   );
 }
 
@@ -918,31 +890,6 @@ function ActiveVoting({
   );
 }
 
-function ChipAvatar({ name, score }: { name: string; score: number }) {
-  const avatar = loadAvatarFor(name);
-  const ring =
-    score >= 8 ? "ring-emerald-500/60" :
-    score >= 6 ? "ring-amber-400/60"  :
-                 "ring-rose-500/60";
-
-  if (avatar) {
-    return (
-      <img
-        src={avatar}
-        alt={name}
-        className={`h-5 w-5 rounded-full object-cover ring-2 ${ring}`}
-      />
-    );
-  }
-  const initial = name?.[0]?.toUpperCase() || "?";
-  return (
-    <div className={`grid h-5 w-5 place-items-center rounded-full bg-zinc-800 text-[10px] font-bold text-zinc-100 ring-2 ${ring}`}>
-      {initial}
-    </div>
-  );
-}
-
-
 // ===== Helpers per enfasi voti (solo per questi componenti) =====
 const clamp10 = (n: number) => Math.max(1, Math.min(10, Number(n) || 0));
 const scoreHue = (n: number) => ((clamp10(n) - 3) / 8) * 120;
@@ -1289,7 +1236,9 @@ React.useEffect(() => {
                   entries={entries}
                   avg={avg}
                   currentUser={currentUser}
-                  showScale
+                  size="sm"          
+                  showHeader={false}  
+                  showScale={false}  
                 />
               </div>
             </div>
