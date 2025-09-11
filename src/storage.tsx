@@ -83,7 +83,7 @@ export async function persistHistory(list: any[], opts?: { roundTripCheck?: bool
   const { error: upErr } = await saveLiveHistoryToStorage(list);
 
   // 2) Aggiorna cn_state per realtime + fallback
-  const { error: stErr } = await saveSharedState({});
+  const { error: stErr } = await saveSharedState({ history: list });
 
   if (upErr || stErr) {
     console.error("[persistHistory] errors", { upErr, stErr });

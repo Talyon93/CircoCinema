@@ -9,6 +9,13 @@ import {
 
 import { AvatarInline } from "./Avatar";
 
+function avgColor(score: number) {
+  const s = Math.max(1, Math.min(10, score));
+  if (s <= 4) return `hsl(0 85% 50%)`;               // rosso fisso fino a 5
+  const hue = ((s - 4) / 4) * 120;                   // 5→0°, 10→120°
+  return `hsl(${hue} 85% 50%)`;
+}
+
 export function VotesBar({
   entries,
   avg,
@@ -105,11 +112,15 @@ export function VotesBar({
         style={{ height: trackH }}
       >
         {avg !== null && (
-          <div
-            className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
-            style={{ width: `${toPct(avg)}%` }}
-          />
-        )}
+        <div
+          className="absolute left-0 top-0 h-full rounded-full"
+          style={{
+            width: `${toPct(avg)}%`,
+            backgroundColor: avgColor(avg),
+          }}
+        />
+      )}
+
 
         {clusters.map((c, i) => {
           const rep = pickRep(c);

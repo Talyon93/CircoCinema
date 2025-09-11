@@ -1196,16 +1196,23 @@ useEffect(() => {
       console.log("[init] history source:", used, "len:", initial.length);
 
       // 3) realtime cn_state
-      off = subscribeSharedState(async (row) => {
-      try {
-        const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
-        if (Array.isArray(live)) setHistory(live);
-      } catch (e) {
-        console.warn("[realtime] reload live history failed:", e);
-      }
-      setActiveVote(row?.active ?? null);
-      setActiveRatings(row?.ratings ?? {});
-    });
+       off = subscribeSharedState(async (row) => {
+   try {
+     const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
+     if (Array.isArray(live)) {
+       setHistory(live);
+     } else if (Array.isArray(row?.history)) {
+       // fallback: usa la history dall’evento realtime
+       setHistory(row.history);
+     }
+   } catch (e) {
+     console.warn("[realtime] reload live history failed:", e);
+     // fallback anche qui se abbiamo row.history
+     if (Array.isArray(row?.history)) setHistory(row.history);
+   }
+   setActiveVote(row?.active ?? null);
+   setActiveRatings(row?.ratings ?? {});
+ });
 
       return; // niente fallback locale se c'è Supabase
     }
