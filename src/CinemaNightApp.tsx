@@ -50,6 +50,7 @@ import { HistoryCardExtended } from "./Components/UI/HistoryCardExtended";
 import { Profile } from "./Pages/Profile";
 import { Header } from "./Components/UI/Header"; 
 import { Login } from "./Pages/Login";
+import VotePage from "./Pages/Vote";
 
   
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -93,74 +94,6 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
     >
       {theme === "dark" ? "🌙 Dark" : "☀️ Light"}
     </button>
-  );
-}
-  
-
-// Search + pickers
-function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
-  const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<any[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-
-  const search = async () => {
-    setErr(null);
-    setLoading(true);
-    try {
-      const res = await tmdbSearch(q);
-      setResults(res.slice(0, 12));
-    } catch (e: any) {
-      setErr(e?.message || "Search error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Card>
-      <div className="flex items-end gap-2">
-        <div className="flex-1">
-          <label className="text-sm text-gray-600 dark:text-zinc-400">Search a movie</label>
-          <input
-            className="w-full rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-            placeholder="e.g. The Matrix"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && search()}
-          />
-        </div>
-        <button
-          onClick={search}
-          className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
-          disabled={!q || loading}
-        >
-          {loading ? "..." : "Search"}
-        </button>
-      </div>
-      {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        {results.map((r) => (
-          <div
-            key={r.id}
-            className="flex cursor-pointer gap-3 rounded-xl border p-2 hover:bg-gray-50 dark:hover:bg-zinc-900 border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-            onClick={() => {
-              onPick(r);
-              setResults([]);          // 🔹 nasconde i suggerimenti
-              setQ(r.title || "");     // (opzionale) mostra il titolo scelto nell'input
-            }}
-          >
-            {r.poster_path && <img src={getPosterUrl(r.poster_path, "w185")} alt={r.title} className="h-24 w-16 rounded-lg object-cover" />}
-            <div className="flex-1">
-              <div className="font-semibold">
-                {r.title} {r.release_date ? <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span> : null}
-              </div>
-              <div className="line-clamp-3 text-sm text-gray-700 dark:text-zinc-300">{r.overview}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </Card>
   );
 }
 
@@ -289,60 +222,6 @@ function EditMovieDialog({
         </div>
       </div>
     </div>
-  );
-}
-
-/** StartVoteCard: choose movie and "Picked by" */
-function StartVoteCard({
-  movie,
-  knownUsers,
-  onStartVoting,
-}: {
-  movie: any;
-  knownUsers: string[];
-  onStartVoting: (movie: any, pickedBy: string) => void;
-}) {
-  const [pickedBy, setPickedBy] = useState("");
-  const valid = pickedBy.trim().length > 0;
-
-  return (
-    <Card>
-      <div className="flex gap-4">
-        {movie.poster_path && <img src={getPosterUrl(movie.poster_path, "w342")} className="h-48 w-32 rounded-xl object-cover" alt={movie.title} />}
-        <div className="flex-1">
-          <h3 className="text-xl font-bold">
-            {movie.title} {movie.release_date ? <span className="text-gray-500">({movie.release_date.slice(0, 4)})</span> : null}
-          </h3>
-          <p className="mt-1 whitespace-pre-wrap text-gray-700 dark:text-zinc-300">{movie.overview}</p>
-
-          <div className="mt-4 grid gap-2">
-            <label className="text-sm font-medium text-gray-700 dark:text-zinc-300">Picked by</label>
-            <input
-              list="known-users"
-              className="max-w-sm rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-              placeholder="Choose a name or type a new one"
-              value={pickedBy}
-              onChange={(e) => setPickedBy(e.target.value)}
-            />
-            <datalist id="known-users">
-              {knownUsers.map((u) => (
-                <option key={u} value={u} />
-              ))}
-            </datalist>
-          </div>
-
-          <div className="mt-3">
-            <button
-              className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
-              disabled={!valid}
-              onClick={() => onStartVoting(movie, pickedBy.trim())}
-            >
-              Start voting
-            </button>
-          </div>
-        </div>
-      </div>
-    </Card>
   );
 }
 
@@ -478,317 +357,6 @@ function ScaleLabels({ className = "" }: { className?: string }) {
   );
 }
 
-
-// ============== ActiveVoting ==============
-function ActiveVoting({
-  movie,
-  pickedBy,
-  currentUser,
-  ratings,
-  onSendVote,
-  onEnd,
-  onMetaResolved, // NEW (opzionale)
-}: {
-  movie: any;
-  pickedBy?: string;
-  currentUser: string;
-  ratings: Record<string, number>;
-  onSendVote: (score: number) => void;
-  onEnd: () => void;
-  onMetaResolved?: (nextMovie: any) => void; // NEW
-}) {
-  // Stato voto utente
-  const you = ratings[currentUser];
-  const hasVoted = typeof you === "number";
-  const [openVote, setOpenVote] = React.useState(false);
-  const [editMode, setEditMode] = React.useState(false);
-  const [temp, setTemp] = React.useState<number>(you ?? 7);
-  React.useEffect(() => {
-    if (typeof you === "number") setTemp(you);
-  }, [you]);
-  const submit = () => {
-    const fixed = roundToQuarter(temp);
-    onSendVote(fixed);
-    setOpenVote(false);
-    setEditMode(false);
-  };
-
-  // Derivati
-  const entries = Object.entries(ratings) as [string, number][];
-  const scores = entries.map(([, n]) => Number(n));
-  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-
-  const sorted = entries
-    .slice()
-    .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]));
-
-  const releaseYear =
-    movie?.release_year ||
-    (movie?.release_date ? String(movie.release_date).slice(0, 4) : null);
-
-  const genreLine = Array.isArray(movie?.genres)
-    ? movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
-    : "";
-
-  const poster = movie?.poster_path ? getPosterUrl(movie.poster_path, "w342") : "";
-
-  function PickedByPill({ name }: { name: string }) {
-    const avatar = loadAvatarFor(name);
-    const initial = name?.[0]?.toUpperCase() || "?";
-    return (
-      <div
-        className="
-          inline-flex items-center gap-3 rounded-full
-          px-3 py-2
-          bg-[#201607] ring-1 ring-[#d8b24a]/30
-          text-[#f6e7b0] shadow-[inset_0_1px_0_rgba(255,255,255,.04)]
-        "
-        title={`Picked by: ${name}`}
-      >
-        <div className="grid h-5 w-5 place-items-center rounded-md bg-[#d8b24a] text-black">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-            <path d="M3 6.5 15.5 4l1 3L4 9.5l-1-3zM4 11h16a1 1 0 0 1 1 1v7H3v-7a1 1 0 0 1 1-1z" />
-          </svg>
-        </div>
-        {avatar ? (
-          <img
-            src={avatar}
-            alt={name}
-            className="h-6 w-6 rounded-full object-cover ring-2 ring-[#d8b24a]/50"
-          />
-        ) : (
-          <div className="grid h-6 w-6 place-items-center rounded-full bg-[#2e2a1f] text-[#f6e7b0] ring-2 ring-[#d8b24a]/40 text-[10px] font-bold">
-            {initial}
-          </div>
-        )}
-        <div className="leading-4 text-[11px] text-[#f6e7b0]/90">
-          <div className="-mb-0.5">Picked by</div>
-        </div>
-        <div className="ml-1 text-sm font-semibold">{name}</div>
-      </div>
-    );
-  }
-
-  // Recap stile History: anello + barra con lineette
-  const AvgRing = ({ value }: { value: number }) => {
-    const r = 26, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
-    return (
-      <div className="relative h-16 w-16">
-        <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-lime-400"
-            strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}/>
-        </svg>
-        <div className="absolute inset-0 grid place-items-center text-sm font-bold">
-          {formatScore(value)}
-        </div>
-      </div>
-    );
-  };
-
-  /* ---------- Render ---------- */
-  return (
-    <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 dark:border-zinc-800 dark:bg-zinc-900/60">
-      {/* Header: pill a sinistra, titolo a destra */}
-      <div className="mb-4 grid items-start gap-3 md:grid-cols-[auto,1fr]">
-        <div>{pickedBy && <PickedByPill name={pickedBy} />}</div>
-        <div>
-          <div className="text-xl font-bold">
-            Voting in progress · {movie?.title}
-            {releaseYear && <span className="ml-1 text-zinc-400">({releaseYear})</span>}
-          </div>
-
-          {/* Meta badges */}
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600 dark:text-zinc-400">
-            {Number(movie?.runtime) > 0 && (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {movie.runtime} min</span>
-            )}
-            {genreLine && (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>
-            )}
-            {typeof movie?.imdb_rating === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(movie.imdb_rating)}</span>
-            ) : typeof movie?.tmdb_vote_average === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(movie.tmdb_vote_average)}</span>
-            ) : null}
-            {typeof movie?.tmdb_vote_count === "number" && movie.tmdb_vote_count > 0 && (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                {movie.tmdb_vote_count.toLocaleString()} votes
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Layout principale */}
-      <div className="grid gap-5 md:grid-cols-[176px,1fr]">
-        {/* Poster */}
-        <div className="flex items-start justify-center">
-          {poster ? (
-            <img
-              src={poster}
-              className="h-[264px] w-[176px] rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
-              alt={movie?.title}
-            />
-          ) : (
-            <div className="flex h-[264px] w-[176px] items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
-              No poster
-            </div>
-          )}
-        </div>
-
-        {/* Right column */}
-        <div className="min-w-0">
-          {movie?.overview && (
-            <p className="mb-3 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
-              {movie.overview}
-            </p>
-          )}
-
-          {/* Recap voti – stile history */}
-          <div className="mb-3">
-            <div className="flex items-center gap-6">
-              {avg !== null && <AvgRing value={avg} />}
-              <div className="flex-1">
-                <VotesBar
-                  entries={entries}       // <-- Object.entries(ratings)
-                  avg={avg}
-                  currentUser={currentUser}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* VOTE / EDIT */}
-          {!hasVoted ? (
-            <div className="mt-2">
-              {!openVote ? (
-                <button
-                  className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
-                  onClick={() => setOpenVote(true)}
-                >
-                  Vote
-                </button>
-              ) : (
-                <div className="mt-2 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm text-zinc-300">Choose your score</div>
-                    <div className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
-                      {formatScore(temp)}
-                    </div>
-                  </div>
-
-                  <ScoreSlider value={temp} onChange={setTemp} />
-
-                  <div className="mt-3 flex items-center gap-2">
-                    <button
-                      className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
-                      onClick={submit}
-                    >
-                      Submit vote
-                    </button>
-                    <button
-                      className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
-                      onClick={() => {
-                        setOpenVote(false);
-                        setTemp(you ?? 7);
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <span className="ml-auto text-sm font-semibold text-zinc-200">{formatScore(temp)}</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              {!editMode ? (
-                <div className="mt-2 flex items-center justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-3">
-                  <div className="flex items-center gap-2 text-sm text-zinc-300">
-                    <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-                    <span>
-                      <b>Vote saved.</b> Please wait for others…
-                    </span>
-                  </div>
-                  <button
-                    className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
-                    onClick={() => {
-                      setTemp(you ?? 7);
-                      setEditMode(true);
-                    }}
-                  >
-                    Edit vote
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-2 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm text-zinc-300">
-                      Edit your vote{" "}
-                      <span className="text-zinc-500">(current: {formatScore(you)})</span>
-                    </div>
-                    <div className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
-                      {formatScore(temp)}
-                    </div>
-                  </div>
-
-                  <ScoreSlider value={temp} onChange={setTemp} />
-
-                  <div className="mt-3 flex items-center gap-2">
-                    <button
-                      className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
-                      onClick={submit}
-                    >
-                      Save
-                    </button>
-                    <button
-                      className="rounded-xl border border-zinc-700 px-3 py-2 text-zinc-200"
-                      onClick={() => {
-                        setEditMode(false);
-                        setTemp(you ?? 7);
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Live votes list */}
-          <div className="mt-5">
-            <div className="mb-2 text-sm font-semibold">Live votes</div>
-            {sorted.length === 0 ? (
-              <div className="rounded-2xl border bg-white p-3 text-sm text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-                No votes yet — be the first!
-              </div>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {sorted.map(([name, score]) => (
-                  <VoterChip
-                    key={name}
-                    name={name}
-                    score={Number(score)}
-                    currentUser={currentUser}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* End voting */}
-          <div className="mt-5">
-            <button className="rounded-xl border px-4 py-2 dark:border-zinc-700" onClick={onEnd}>
-              End voting
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ===== Helpers per enfasi voti (solo per questi componenti) =====
 const clamp10 = (n: number) => Math.max(1, Math.min(10, Number(n) || 0));
@@ -1770,30 +1338,24 @@ useEffect(() => {
     setPickedMovie(details || res);
   };
 
-  const startVoting = async (movie: any, pickedBy: string) => {
-    const movieWithGenres = await ensureGenres(movie);
-  
-    const session = {
-      id: Date.now(),
-      movie: {
-        ...movieWithGenres,
-        genres: Array.isArray(movieWithGenres?.genres) ? movieWithGenres.genres : [],
-      },
-      picked_by: pickedBy,
-      started_at: new Date().toISOString(),
-    };
-  
-    setActiveVote(session);
-    setActiveRatings({});
-  
-    if (sb) {
-      await saveSharedState({ active: session, ratings: {} });
-    } else {
-      lsSetJSON(K_ACTIVE_VOTE, session);
-      lsSetJSON(K_ACTIVE_RATINGS, {});
-    }
+const startVoting = async (movie: any, pickedBy: string) => {
+  const movieWithGenres = await ensureGenres(movie);
+  const session = {
+    id: Date.now(),
+    movie: { ...movieWithGenres, genres: Array.isArray(movieWithGenres?.genres) ? movieWithGenres.genres : [] },
+    picked_by: pickedBy,
+    opened_by: user,                    // 👈 NEW: chi ha aperto la votazione
+    started_at: new Date().toISOString(),
   };
-  
+  setActiveVote(session);
+  setActiveRatings({});
+  if (sb) {
+    await saveSharedState({ active: session, ratings: {} }); // realtime notify
+  } else {
+    lsSetJSON(K_ACTIVE_VOTE, session);
+    lsSetJSON(K_ACTIVE_RATINGS, {});
+  }
+};
 
   const sendVote = async (score: number) => {
   if (!user || !activeVote) return;
@@ -1810,8 +1372,12 @@ useEffect(() => {
   }
 };
 
-  const endVoting = async () => {
+const endVoting = async () => {
   if (!activeVote) return;
+  if (activeVote.opened_by && activeVote.opened_by !== user) {
+    alert("Only the host can end this voting.");
+    return;
+  }
 
   const entry = {
     id: activeVote.id,
@@ -1822,22 +1388,35 @@ useEffect(() => {
   };
 
   const nextHistory = [entry, ...history];
-
-  // UI subito
   setHistory(nextHistory);
   setActiveVote(null);
   setActiveRatings({});
 
   if (sb) {
-    // Scrivi la history su Storage + cn_state (così anche chi entra dopo la vede)
-    await persistHistory(nextHistory);
-    // Azzera lo stato attivo per tutti
-    await saveSharedState({ active: null, ratings: {} });
+    await persistHistory(nextHistory);           // salva su Storage + cn_state (e tutti vedono la history)
+    await saveSharedState({ active: null, ratings: {} }); // azzera lo stato attivo (realtime)
   } else {
-    // fallback locale
     const L = lsGetJSON<any[]>(K_VIEWINGS, []);
     L.unshift(entry);
     lsSetJSON(K_VIEWINGS, L);
+    localStorage.removeItem(K_ACTIVE_VOTE);
+    localStorage.removeItem(K_ACTIVE_RATINGS);
+  }
+};
+
+const cancelVoting = async () => {
+  if (!activeVote) return;
+  if (activeVote.opened_by && activeVote.opened_by !== user) {
+    alert("Only the host can cancel this voting.");
+    return;
+  }
+  // UI immediata
+  setActiveVote(null);
+  setActiveRatings({});
+  // Realtime: pulisci stato condiviso senza scrivere history
+  if (sb) {
+    await saveSharedState({ active: null, ratings: {} });   // 🔔 supabase notify
+  } else {
     localStorage.removeItem(K_ACTIVE_VOTE);
     localStorage.removeItem(K_ACTIVE_RATINGS);
   }
@@ -1853,31 +1432,16 @@ useEffect(() => {
           <Header user={user} onLogout={logout} tab={tab} setTab={setTab} theme={theme} setTheme={setTheme} />
 
           {tab === "vote" && (
-            <div className="mt-2 grid gap-4">
-              {activeVote ? (
-                <ActiveVoting
-                  movie={activeVote.movie}
-                  pickedBy={activeVote.picked_by}
-                  currentUser={user}
-                  ratings={activeRatings}
-                  onSendVote={sendVote}
-                  onEnd={endVoting}
-                  onMetaResolved={async (nextMovie) => {
-                    // UI
-                    const nextActive = { ...activeVote, movie: nextMovie };
-                    setActiveVote(nextActive);
-                    // server (Supabase) o locale
-                    if (sb) await saveSharedState({ active: nextActive });
-                    else lsSetJSON(K_ACTIVE_VOTE, nextActive);
-                  }}
-                />
-              ) : (
-                <>
-                  <SearchMovie onPick={onPick} />
-                  {pickedMovie && <StartVoteCard movie={pickedMovie} knownUsers={knownUsers} onStartVoting={startVoting} />}
-                </>
-              )}
-            </div>
+            <VotePage
+              currentUser={user}
+              knownUsers={knownUsers}
+              activeVote={activeVote}
+              activeRatings={activeRatings}
+              onStartVoting={startVoting}
+              onSendVote={sendVote}
+              onEndVoting={endVoting}
+              onCancelVoting={cancelVoting}
+            />
           )}
 
             {tab === "stats" && (
