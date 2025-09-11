@@ -445,16 +445,6 @@ function ActiveVoting({
               <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {movie.runtime} min</span>
             )}
             {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
-            {typeof movie?.imdb_rating === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(movie.imdb_rating)}</span>
-            ) : typeof movie?.tmdb_vote_average === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(movie.tmdb_vote_average)}</span>
-            ) : null}
-            {typeof movie?.tmdb_vote_count === "number" && movie.tmdb_vote_count > 0 && (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                {movie.tmdb_vote_count.toLocaleString()} votes
-              </span>
-            )}
           </div>
         </div>
       </div>

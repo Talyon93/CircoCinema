@@ -23,7 +23,13 @@ export function Header({
   const [hasActiveVote, setHasActiveVote] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement | null>(null);
 
-  // derive "Now Showing" from shared state
+  // Imposta Archive come tab iniziale se non salvato
+  React.useEffect(() => {
+    const saved = localStorage.getItem("CN_TAB") as TabKey | null;
+    if (!saved) setTab("history");
+  }, [setTab]);
+
+  // "Now Showing" e stato attivo voto
   React.useEffect(() => {
     let mounted = true;
 
@@ -59,31 +65,35 @@ export function Header({
     };
   }, []);
 
+  // Tab generica con lineetta bianca
   const TabBtn = ({ k, label }: { k: TabKey; label: string }) => {
     const active = tab === k;
     return (
       <button
-        onClick={() => setTab(k)}
+        onClick={() => {
+          setTab(k);
+          localStorage.setItem("CN_TAB", k);
+        }}
         aria-current={active ? "page" : undefined}
         className={[
-          "relative rounded-full px-5 md:px-6 py-2.5 md:py-3",
+          "relative flex flex-col items-center justify-center px-5 md:px-6 py-2.5 md:py-3",
           "text-base md:text-lg font-semibold tracking-wide transition",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60",
-          active
-            ? "bg-black text-white dark:bg-white dark:text-black shadow-sm ring-1 ring-black/10 dark:ring-white/10"
-            : "text-zinc-800 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800/70 ring-1 ring-transparent hover:ring-zinc-300/50 dark:hover:ring-zinc-600/60",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60",
+          active ? "text-white" : "text-zinc-400 hover:text-white",
         ].join(" ")}
       >
         {label}
         {active && (
           <span
             aria-hidden
-            className="absolute -bottom-2 left-1/2 h-1 w-8 -translate-x-1/2 rounded-full bg-current/80"
+            className="absolute -bottom-1.5 h-1 w-8 rounded-full bg-white -translate-y-[15px]"
           />
         )}
       </button>
     );
   };
+
+  const voteLabel = hasActiveVote ? "Vote" : "Start Vote";
 
   const NowShowingBadge = () =>
     !hasActiveVote ? null : (
@@ -101,24 +111,25 @@ export function Header({
         "border-b border-zinc-200/70 dark:border-zinc-800",
       ].join(" ")}
     >
-      <div className="mx-auto grid max-w-6xl grid-cols-[auto,1fr,auto] items-center gap-3 px-3 py-3 md:px-4">
-        {/* LEFT: badge (only if active) */}
-        <div className="flex items-center">
+      {/* 3 colonne simmetriche: 1fr / auto / 1fr → tabs sempre centrate */}
+      <div className="mx-auto grid max-w-6xl grid-cols-[1fr,auto,1fr] items-center gap-3 px-3 py-3 md:px-4">
+        {/* LEFT: badge (non sposta il centro) */}
+        <div className="justify-self-start">
           <NowShowingBadge />
         </div>
 
-        {/* CENTER: big tabs */}
+        {/* CENTER: tabs */}
         <nav
-          className="flex items-center justify-center gap-3 md:gap-4"
+          className="flex items-center justify-center gap-3 md:gap-6"
           aria-label="Primary"
         >
-          <TabBtn k="vote" label="Vote" />
-          <TabBtn k="history" label="History" />
+          <TabBtn k="history" label="Archive" />
+          <TabBtn k="vote" label={voteLabel} />
           <TabBtn k="stats" label="Stats" />
         </nav>
 
-        {/* RIGHT: avatar menu (theme toggle moved here) */}
-        <div className="ml-auto flex items-center gap-2">
+        {/* RIGHT: avatar menu */}
+        <div className="justify-self-end flex items-center gap-2">
           <div className="relative" ref={menuRef}>
             <button
               onClick={() => setOpen((s) => !s)}
@@ -192,14 +203,14 @@ export function Header({
         </div>
       </div>
 
-      {/* Mobile: badge left, tabs under */}
+      {/* Mobile: badge sopra, tabs sotto (già centrate) */}
       <div className="mx-auto block max-w-6xl px-3 pb-3 md:hidden">
         <div className="mb-2 flex">
           <NowShowingBadge />
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2">
-          <TabBtn k="vote" label="Vote" />
-          <TabBtn k="history" label="History" />
+          <TabBtn k="history" label="Archive" />
+          <TabBtn k="vote" label={voteLabel} />
           <TabBtn k="stats" label="Stats" />
         </div>
       </div>

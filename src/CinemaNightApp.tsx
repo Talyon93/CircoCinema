@@ -900,7 +900,6 @@ export default function CinemaNightApp() {
           {tab === "stats" && (
             <div className="mt-2 grid gap-4">
               <Card>
-                <h3 className="mb-3 text-lg font-semibold">📊 Stats</h3>
                 <Stats history={history} backfillRuntime={backfillHistoryRuntime} isLoading={isBackfillingRuntime} />
               </Card>
             </div>
@@ -910,7 +909,6 @@ export default function CinemaNightApp() {
             <div className="mt-2">
               <Card>
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold">📜 Past nights</h3>
                   <div className="flex items-center gap-2">
                     <button
                       className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"

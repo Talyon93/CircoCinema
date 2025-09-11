@@ -131,10 +131,9 @@ export function Login({ onLogin }: { onLogin: (name: string) => void }) {
             {isActive ? "Now Showing" : "Last Screening"}
           </div>
           <h1 className="mt-3 flex items-center justify-center gap-2 text-2xl font-extrabold text-white">
-            🎬 Welcome to the Screening Room
+            Welcome to the Circo Cinema
           </h1>
           <p className="mt-1 text-sm text-zinc-300/90">
-            Grab your seat — the movie is about to start.
           </p>
           <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent" />
         </div>
@@ -174,7 +173,7 @@ export function Login({ onLogin }: { onLogin: (name: string) => void }) {
         {/* Login */}
         <div className="space-y-3">
           <label htmlFor="login-name" className="sr-only">
-            Your stage name
+            Enter your name
           </label>
           <div className="group relative flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 shadow-sm transition focus-within:border-zinc-400 focus-within:shadow dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-zinc-500">
             <input
@@ -197,21 +196,11 @@ export function Login({ onLogin }: { onLogin: (name: string) => void }) {
           <div className="mt-3 flex items-center justify-between gap-2">
             <button
               type="button"
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition hover:shadow-sm active:translate-y-px disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-              onClick={() => setName("")}
-              disabled={!name}
-              title="Clear"
-            >
-              Reset
-            </button>
-
-            <button
-              type="button"
               onClick={handleSubmit}
               disabled={!canProceed}
               className="relative inline-flex flex-[2] items-center justify-center gap-2 rounded-xl bg-zinc-900 px-5 py-2 text-sm font-semibold text-white shadow-lg transition hover:scale-[1.01] hover:shadow-xl active:translate-y-px disabled:opacity-40 dark:bg-white dark:text-black"
             >
-              <span className="relative z-10">Roll the Film</span>
+              <span className="relative z-10">Enter the Circus</span>
               <span aria-hidden className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-white/15" />
               <span
                 aria-hidden
