@@ -1,51 +1,72 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { createPortal } from "react-dom";
+import { tmdbDetails, tmdbSearch, omdbRatingFromImdbId, mergeMovie, fetchMetaForTitle, ensureRuntime, ensureGenres, getPosterUrl } from "./TMDBHelper";
+// Supabase client + bucket keys
+import { sb, SB_ROW_ID, STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY } from "./supabaseClient";
 
-/**
- * Circo Cinema – complete app (with Dark Mode toggle)
- * - Dark mode via Tailwind `dark:` + toggle persistente
- * - Vote flow with "Picked by", live stats, edit vote
- * - History: Extended + Compact (aligned like spreadsheet row)
- * - Profile: avatar + list of movies you picked
- * - localStorage sync across tabs
- * - Lazy TMDB metadata (poster/overview) caching
- * - Optional seeding if history is empty (tries ./seed or /circo_seed.json)
- */
+// Stato condiviso (tabella cn_state)
+import {
+  loadSharedState,
+  saveSharedState,
+  subscribeSharedState,
+  setRatingAtomic,
+  SharedState,
+} from "./state";
 
-// ============================
-// Config / keys
-// ============================
-const TMDB_API_KEY = "99cb7c79bbe966a91a2ffcb7a3ea3d37";
-const OMDB_API_KEY = "c71ea1b7";
+// Gestione history.json (seed + live)
+import {
+  persistHistory,
+  loadHistoryFromStoragePreferLive,
+  ensureLiveFileExists,
+  saveLiveHistoryToStorage,
+  downloadJSONFromStorage,
+} from "./storage";
 
-const K_USER = "cn_user";
-const K_VIEWINGS = "cn_viewings";
-const K_ACTIVE_VOTE = "cn_active_vote";       // { id, movie, picked_by, started_at }
-const K_ACTIVE_RATINGS = "cn_active_ratings"; // { [user]: number }
-const K_PROFILE_PREFIX = "cn_profile_";       // `${K_PROFILE_PREFIX}${username}` -> { avatar?: string }
-const K_TMDB_CACHE = "cn_tmdb_cache";         // cache poster/overview per titolo
-const K_THEME = "cn_theme";                   // 'light' | 'dark'
+// LocalStorage helpers + costanti chiave
+import {
+  K_USER,
+  K_VIEWINGS,
+  K_ACTIVE_VOTE,
+  K_ACTIVE_RATINGS,
+  K_PROFILE_PREFIX,
+  K_TMDB_CACHE,
+  K_THEME,
+  lsGetJSON,
+  lsSetJSON,
+  getMetaCache,
+  setMetaCache,
+  loadAvatarFor,
+} from "./localStorage";
+
+import {
+  ScoreDonut,
+} from "./Components/UI/ScoreDonut";
+
+import {
+  VotesBar,
+} from "./Components/UI/VotesBar";
+
+import {
+  VoterChip,
+} from "./Components/UI/VoterChip";
 
 
+import {
+  Stats,
+} from "./Pages/Stats";
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-
-
-const sb = SUPABASE_URL && SUPABASE_ANON_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-  : null; // fallback automatico a localStorage
-
-const SB_ROW_ID = "singleton" as const; // una sola riga condivisa
+import {
+  Profile,
+} from "./Pages/Profile";
 
 
-// ===== Shared state su Supabase (con fallback locale) =====
-// ===== Supabase Storage (JSON history) =====
-// ===== Supabase Storage (JSON history) =====
-const STORAGE_BUCKET = "circo";
-const STORAGE_BASE_HISTORY_KEY = "history.json";       // seed, sola lettura
-const STORAGE_LIVE_HISTORY_KEY = "history_live.json";  // file “vivo” dove scriviamo
+import {
+  formatScore,
+} from "./Utils/Utils";
+
+import { PickedByBadge } from "./Components/UI/PickedByBadge";
+import { HistoryCardExtended } from "./Components/UI/HistoryCardExtended";
 
 function formatCompact(n: number) {
   if (n < 1000) return String(n);
@@ -56,365 +77,8 @@ function formatCompact(n: number) {
   return `${Math.round(v * 10) / 10}${units[i]}`;
 }
 
-
-// TMDB: prime recensioni
-async function tmdbReviews(tmdbId: number) {
-  try {
-    const url = `https://api.themoviedb.org/3/movie/${tmdbId}/reviews?api_key=${TMDB_API_KEY}&language=en-US&page=1`;
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    const results = Array.isArray(data?.results) ? data.results : [];
-    return results.slice(0, 3).map((r: any) => ({
-      id: r.id,
-      author: r?.author || r?.author_details?.username || "Unknown",
-      rating: typeof r?.author_details?.rating === "number" ? r.author_details.rating : null,
-      content: r?.content || "",
-      url: r?.url || "",
-      created_at: r?.created_at || null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-
-async function omdbRatingFromImdbId(imdbId: string) {
-  try {
-    if (!OMDB_API_KEY || !imdbId) return null;
-    const res = await fetch(`https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${imdbId}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data?.Response !== "True") return null;
-    return {
-      imdb_rating: data.imdbRating !== "N/A" ? parseFloat(data.imdbRating) : null,
-      imdb_votes:
-        data.imdbVotes && data.imdbVotes !== "N/A"
-          ? parseInt(String(data.imdbVotes).replace(/,/g, ""), 10)
-          : null,
-    };
-  } catch {
-    return null;
-  }
-}
-
-
-async function loadHistoryFromStorage(): Promise<any[] | null> {
-  if (!sb) return null;
-  try {
-    const { data, error } = await sb.storage
-      .from(STORAGE_BUCKET)
-      .download(STORAGE_LIVE_HISTORY_KEY);
-    if (error || !data) return null;
-    const text = await data.text();
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-async function downloadJSONFromStorage(key: string): Promise<any[] | null> {
-  if (!sb) return null;
-  try {
-    const { data, error } = await sb.storage.from(STORAGE_BUCKET).download(key);
-    if (error || !data) return null;
-    const text = await data.text();
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Carica prima il LIVE, se non esiste torna il BASE */
-async function loadHistoryFromStoragePreferLive(): Promise<{ list: any[]; source: "live" | "base" | null }> {
-  if (!sb) return { list: [], source: null };
-  const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
-  if (Array.isArray(live)) return { list: live, source: "live" };
-  const base = await downloadJSONFromStorage(STORAGE_BASE_HISTORY_KEY);
-  if (Array.isArray(base)) return { list: base, source: "base" };
-  return { list: [], source: null };
-}
-
-/** Scrive SOLO il LIVE (non tocca il BASE) */
-async function saveLiveHistoryToStorage(list: any[]): Promise<{ error: any | null }> {
-  if (!sb) return { error: null };
-  try {
-    const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
-    const { error } = await sb.storage
-      .from(STORAGE_BUCKET)
-      .upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true, contentType: "application/json" });
-    if (error) {
-      console.error("[saveLiveHistoryToStorage] upload error:", error);
-      return { error };
-    }
-    return { error: null };
-  } catch (e) {
-    console.error("[saveLiveHistoryToStorage] exception:", e);
-    return { error: e };
-  }
-}
-
-/** Se non esiste ancora il LIVE, crealo copiando il seed BASE */
-async function ensureLiveFileExists(seedList: any[]) {
-  if (!sb) return;
-  const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
-  if (!Array.isArray(live)) {
-    const { error } = await saveLiveHistoryToStorage(seedList);
-    if (!error) {
-      // opzionale ma utile per coerenza realtime
-      await saveSharedState({ history: seedList });
-    }
-  }
-}
-
-async function saveHistoryToStorage(list: any[]): Promise<{ error: any | null }> {
-  if (!sb) return { error: null };
-  try {
-    const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
-    const { error } = await sb.storage
-      .from(STORAGE_BUCKET)
-      .upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true, contentType: "application/json" });
-    if (error) {
-      console.error("[saveHistoryToStorage] upload error:", error);
-      return { error };
-    }
-    return { error: null };
-  } catch (e) {
-    console.error("[saveHistoryToStorage] exception:", e);
-    return { error: e };
-  }
-}
-
-async function persistHistory(list: any[]) {
-  // Update ottimistico già fatto a monte (setHistory(list))
-  if (!sb) {
-    lsSetJSON(K_VIEWINGS, list);
-    return;
-  }
-
-  // 1) Scrivi SOLO sul LIVE
-  const { error: upErr } = await saveLiveHistoryToStorage(list);
-
-  // 2) Aggiorna cn_state per realtime + fallback
-  const { error: stErr } = await saveSharedState({});
-
-  if (upErr || stErr) {
-    console.error("[persistHistory] errors", { upErr, stErr });
-    alert("Non sono riuscito a salvare sul server. Controlla le policy del bucket/tabella (vedi console).");
-    return;
-  }
-
-  // 3) Round-trip dal LIVE
-  const roundTrip = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY);
-  if (!Array.isArray(roundTrip) || roundTrip.length !== list.length) {
-    console.warn("[persistHistory] roundTrip mismatch", { roundTripLen: roundTrip?.length, expected: list.length });
-  }
-}
-
-type SharedState = {
-  id: string;
-  history: any[];
-  active: any | null;
-  ratings: Record<string, number>;
-  updated_at?: string;
-};
-
-async function loadSharedState(): Promise<SharedState> {
-  if (!sb) {
-    return {
-      id: SB_ROW_ID,
-      history: lsGetJSON<any[]>(K_VIEWINGS, []),
-      active: lsGetJSON<any | null>(K_ACTIVE_VOTE, null),
-      ratings: lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {}),
-    };
-  }
-  const { data, error } = await sb
-    .from("cn_state")
-    .select("*")
-    .eq("id", SB_ROW_ID)
-    .single();
-  if (error || !data) {
-    return { id: SB_ROW_ID, history: [], active: null, ratings: {} };
-  }
-  return data as SharedState;
-}
-
-async function saveSharedState(partial: Partial<SharedState>) {
-  // helper: mirror su localStorage per tab sync locale
-  const writeLocal = (s: Partial<SharedState>) => {
-    if (s.history) lsSetJSON(K_VIEWINGS, s.history);
-    if ("active" in s) lsSetJSON(K_ACTIVE_VOTE, s.active ?? null);
-    if (s.ratings) lsSetJSON(K_ACTIVE_RATINGS, s.ratings);
-  };
-
-  if (!sb) {
-    writeLocal(partial);
-    return { error: null as any };
-  }
-
-  const current = await loadSharedState();
-  const next: SharedState = {
-    id: SB_ROW_ID,
-    history: partial.history ?? current.history,
-    active: partial.active === undefined ? current.active : partial.active,
-    ratings: partial.ratings ?? current.ratings,
-    updated_at: new Date().toISOString(),
-  };
-
-  const { error } = await sb.from("cn_state").upsert(next, { onConflict: "id" });
-  if (error) {
-    console.error("[saveSharedState] upsert error:", error);
-    return { error };
-  }
-
-  // write-through locale per test in locale + resilienza
-  writeLocal(next);
-  return { error: null as any };
-}
-
-function subscribeSharedState(onChange: (s: SharedState) => void) {
-  if (!sb) return () => {};
-
-  // canale con nome unico (evita collisioni in hot reload)
-  const ch = sb.channel(`cn_state_realtime_${Math.random().toString(36).slice(2)}`);
-
-  const handle = async (payload: any) => {
-    const id = payload?.new?.id ?? payload?.old?.id;
-    if (id !== SB_ROW_ID) return; // filtra lato client
-
-    // ✅ read-after-notify: ricarica lo stato canonico
-    const { data, error } = await sb
-      .from("cn_state")
-      .select("*")
-      .eq("id", SB_ROW_ID)
-      .single();
-
-    if (!error && data) {
-      onChange(data as SharedState);
-    } else {
-      console.warn("[RT READBACK] error", error);
-    }
-  };
-
-  ch.on("postgres_changes", { event: "INSERT", schema: "public", table: "cn_state" }, handle)
-    .on("postgres_changes", { event: "UPDATE", schema: "public", table: "cn_state" }, handle)
-    .on("postgres_changes", { event: "DELETE", schema: "public", table: "cn_state" }, handle)
-    .subscribe((status) => {
-      console.log("[RT STATUS]", status);
-      // 🔁 autoripartenza in caso di problemi
-      if (status === "TIMED_OUT" || status === "CHANNEL_ERROR" || status === "CLOSED") {
-        setTimeout(() => ch.subscribe(), 500);
-      }
-    });
-
-  return () => sb.removeChannel(ch);
-}
-
-
-// ============================
-// Helpers
-// ============================
-
-async function setRatingAtomic(user: string, score: number) {
-  if (!sb) {
-    const cur = lsGetJSON<Record<string, number>>(K_ACTIVE_RATINGS, {});
-    cur[user] = score;
-    lsSetJSON(K_ACTIVE_RATINGS, cur);
-    return;
-  }
-
-  const { error } = await sb.rpc("cn_set_rating", {
-    _id: SB_ROW_ID,
-    _user: user,
-    _score: score,
-  });
-
-  if (error) {
-    console.warn("[setRatingAtomic] RPC failed, fallback to upsert:", error);
-    // fallback: leggo lo stato e scrivo il merge via upsert (meno atomico, ma funziona)
-    const cur = (await loadSharedState())?.ratings || {};
-    cur[user] = score;
-    await saveSharedState({ ratings: cur });
-  }
-}
-
-
-function mergeMovie(base: any, det: any) {
-  const release_year =
-    (det?.release_date || base?.release_date || "").slice(0, 4) ||
-    base?.release_year ||
-    null;
-
-  return {
-    ...base,
-    id: base?.id ?? det?.id,
-    poster_path: base?.poster_path ?? det?.poster_path,
-    overview: base?.overview ?? det?.overview ?? "",
-    genres: Array.isArray(det?.genres) ? det.genres : (base?.genres || []),
-    runtime: det?.runtime ?? base?.runtime,
-    release_year,
-    tmdb_vote_average:
-      typeof det?.vote_average === "number"
-        ? det.vote_average
-        : base?.tmdb_vote_average,
-    tmdb_vote_count:
-      typeof det?.vote_count === "number"
-        ? det.vote_count
-        : base?.tmdb_vote_count,
-    imdb_id: det?.external_ids?.imdb_id ?? base?.imdb_id,
-  };
-}
-
-// Assicura che il movie abbia almeno genres (e, già che ci siamo, completiamo poster/overview se mancano)
-async function ensureGenres(movie: any): Promise<any> {
-  try {
-    let out = { ...movie };
-    let det: any = null;
-
-    if (movie?.id) {
-      det = await tmdbDetails(movie.id);
-      if (det) out = mergeMovie(out, det);
-    }
-
-    if (!out?.id && movie?.title) {
-      const search = await tmdbSearch(movie.title);
-      const first = search?.[0];
-      if (first?.id) {
-        det = await tmdbDetails(first.id);
-        out = det
-          ? mergeMovie(out, det)
-          : {
-              ...out,
-              id: first.id,
-              poster_path: out.poster_path ?? first.poster_path,
-              overview: out.overview ?? first.overview ?? "",
-            };
-      }
-    }
-
-    // IMDb rating (se possibile), altrimenti useremo tmdb_vote_average in UI
-    if (!out.imdb_rating && out.imdb_id) {
-      const omdb = await omdbRatingFromImdbId(out.imdb_id);
-      if (omdb) out = { ...out, ...omdb };
-    }
-
-    return out;
-  } catch {
-    return movie;
-  }
-}
-
-async function ensureRuntime(movie: any): Promise<any> {
-  try {
-    return await ensureGenres(movie);
-  } catch {
-    return movie;
-  }
-}
   
-  const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 async function enrichFromTmdbByTitleOrId(movie: any) {
   return await ensureGenres(movie);
@@ -427,106 +91,11 @@ function getAverage(r: Record<string, number> | undefined | null) {
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
-function posterUrl(p?: string, size: "w185" | "w342" = "w185") {
-  if (!p) return "";
-  if (p.startsWith("http")) return p;
-  return `https://image.tmdb.org/t/p/${size}${p}`;
-}
-function formatScore(n: number) {
-  const s = (Math.round(n * 100) / 100).toFixed(2);
-  return s.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
-}
 function roundToQuarter(n: number) {
   return Math.round(n / 0.25) * 0.25;
 }
-function lsGetJSON<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function lsSetJSON(key: string, value: any) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {}
-}
-function loadAvatarFor(name: string): string | null {
-  try {
-    const raw = localStorage.getItem(`${K_PROFILE_PREFIX}${name}`);
-    if (!raw) return null;
-    const obj = JSON.parse(raw || "{}");
-    return obj?.avatar || null;
-  } catch {
-    return null;
-  }
-}
 
-// TMDB search/details
-async function tmdbSearch(query: string) {
-  const q = (query || "").trim();
-  if (!q) return [] as any[];
-  try {
-    const url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(
-      q
-    )}&language=en-US`;
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data?.results || []) as any[];
-  } catch {
-    return [];
-  }
-}
-async function tmdbDetails(tmdbId: number) {
-  try {
-    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US&append_to_response=external_ids`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-  
-
-// TMDB metadata cache for History seed entries
-type MetaCache = Record<string, { poster_path?: string; overview?: string }>;
-function getMetaCache(): MetaCache {
-  return lsGetJSON<MetaCache>(K_TMDB_CACHE, {});
-}
-function setMetaCache(cache: MetaCache) {
-  lsSetJSON(K_TMDB_CACHE, cache);
-}
-async function fetchMetaForTitle(title: string): Promise<{ poster_path?: string; overview?: string } | null> {
-  const q = (title || "").trim();
-  if (!q) return null;
-
-  try {
-    // 1) search
-    const searchUrl = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q)}&language=en-US`;
-    const sres = await fetch(searchUrl);
-    if (!sres.ok) return null;
-    const sdata = await sres.json();
-    const first = (sdata?.results || [])[0];
-    if (!first?.id) return null;
-
-    // 2) details
-    const detUrl = `https://api.themoviedb.org/3/movie/${first.id}?api_key=${TMDB_API_KEY}&language=en-US`;
-    const dres = await fetch(detUrl);
-    if (!dres.ok) return null;
-    const det = await dres.json();
-
-    return { poster_path: det?.poster_path || first?.poster_path, overview: det?.overview || "" };
-  } catch {
-    return null;
-  }
-}
-
-// ============================
 // Theme (Dark/Light)
-// ============================
 type Theme = "light" | "dark";
 function getInitialTheme(): Theme {
   const saved = (localStorage.getItem(K_THEME) as Theme | null) || null;
@@ -540,9 +109,7 @@ function applyTheme(theme: Theme) {
   localStorage.setItem(K_THEME, theme);
 }
 
-// ============================
 // UI primitives
-// ============================
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
     <div
@@ -660,9 +227,7 @@ function Login({ onLogin }: { onLogin: (name: string) => void }) {
   );
 }
 
-// ============================
 // Search + pickers
-// ============================
 function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
@@ -715,7 +280,7 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
               setQ(r.title || "");     // (opzionale) mostra il titolo scelto nell'input
             }}
           >
-            {r.poster_path && <img src={posterUrl(r.poster_path, "w185")} alt={r.title} className="h-24 w-16 rounded-lg object-cover" />}
+            {r.poster_path && <img src={getPosterUrl(r.poster_path, "w185")} alt={r.title} className="h-24 w-16 rounded-lg object-cover" />}
             <div className="flex-1">
               <div className="font-semibold">
                 {r.title} {r.release_date ? <span className="text-gray-500">({r.release_date?.slice(0, 4)})</span> : null}
@@ -828,7 +393,7 @@ function EditMovieDialog({
             >
               {r.poster_path && (
                 <img
-                  src={posterUrl(r.poster_path, "w185")}
+                  src={getPosterUrl(r.poster_path, "w185")}
                   alt={r.title}
                   className="h-24 w-16 rounded-lg object-cover"
                 />
@@ -873,7 +438,7 @@ function StartVoteCard({
   return (
     <Card>
       <div className="flex gap-4">
-        {movie.poster_path && <img src={posterUrl(movie.poster_path, "w342")} className="h-48 w-32 rounded-xl object-cover" alt={movie.title} />}
+        {movie.poster_path && <img src={getPosterUrl(movie.poster_path, "w342")} className="h-48 w-32 rounded-xl object-cover" alt={movie.title} />}
         <div className="flex-1">
           <h3 className="text-xl font-bold">
             {movie.title} {movie.release_date ? <span className="text-gray-500">({movie.release_date.slice(0, 4)})</span> : null}
@@ -911,9 +476,7 @@ function StartVoteCard({
   );
 }
 
-// ============================
 // Voting (with Edit vote)
-// ============================
 function Avatar({ name }: { name: string }) {
   const initials = name
     .split(" ")
@@ -925,48 +488,6 @@ function Avatar({ name }: { name: string }) {
   if (avatar) return <img src={avatar} className="h-8 w-8 rounded-full object-cover" alt={name} />;
   return <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold">{initials || "?"}</div>;
 }
-
-
-/* ===========================
- *  ACTIVE VOTING (con lazy meta fetch)
- * =========================== */
-// ============== Mini componenti interni ==============
-const ClapperIcon: React.FC<{ className?: string }> = ({ className = "" }) => (
-  <svg viewBox="0 0 24 24" className={`h-4 w-4 ${className}`} fill="currentColor" aria-hidden="true">
-    <path d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Zm18-2v2H3V6a2 2 0 0 1 2-2h2l2 2h3l-2-2h3l2 2h3l-2-2h3a2 2 0 0 1 2 2Z"/>
-  </svg>
-);
-
-export function PickedByBadge({ name }: { name?: string }) {
-  if (!name) return null;
-  const avatar = loadAvatarFor(name);
-  const initial = name?.[0]?.toUpperCase() || "?";
-
-  return (
-    <span
-      className="inline-flex items-center gap-2 rounded-full border border-amber-400/40
-                 bg-amber-500/15 px-2.5 py-1.5 text-amber-200 shadow-sm backdrop-blur
-                 ring-1 ring-amber-400/20"
-      title={`Picked by: ${name}`}
-    >
-      <ClapperIcon className="text-amber-300" />
-      {avatar ? (
-        <img
-          src={avatar}
-          alt={name}
-          className="h-5 w-5 rounded-full object-cover ring-2 ring-amber-400/50"
-        />
-      ) : (
-        <span className="grid h-5 w-5 place-items-center rounded-full bg-amber-500/20
-                         text-[10px] font-bold text-amber-100 ring-2 ring-amber-400/50">
-          {initial}
-        </span>
-      )}
-      <span className="text-xs font-bold">{name}</span>
-    </span>
-  );
-}
-
 
 function AvatarInline({ name }: { name: string }) {
   const avatar = loadAvatarFor(name);
@@ -1101,187 +622,6 @@ function ScoreSlider({
 }
 
 
-/** Barra voti con avatar sopra le tacche (riutilizzabile ovunque)
- *  - entries: [ [nome, voto], ... ]
- *  - avg: media (1..10) o null
- *  - currentUser: evidenzia il tuo avatar con ring bianco
- *  - size: 'md' | 'sm' (compact)
- *  - showScale: mostra 1/5/10 sotto
- */
-function VotesBarWithAvatars({
-  entries,
-  avg,
-  currentUser,
-  size = "md",
-  showScale = true,
-}: {
-  entries: [string, number][];
-  avg: number | null;
-  currentUser?: string;
-  size?: "sm" | "md";
-  showScale?: boolean;
-}) {
-  const toPct = (n: number) => ((Number(n) - 1) / 9) * 100;
-  const BADGE_SHIFT = 0.5;
-  // dimensioni
-  const trackH    = size === "sm" ? 8  : 16;
-  const tickH     = size === "sm" ? 14 : 24;
-  const avatarSz  = size === "sm" ? 18 : 22;
-  const countSz   = size === "sm" ? 14 : 16;
-
-  const ringByScore = (s: number) =>
-    s >= 8 ? "ring-emerald-500/70" : s >= 6 ? "ring-amber-400/70" : "ring-rose-500/70";
-
-  // misura track per soglia in px -> %
-  const ref = React.useRef<HTMLDivElement>(null);
-  const [w, setW] = React.useState(0);
-  React.useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setW(el.clientWidth));
-    setW(el.clientWidth);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // punti ordinati
-  const points = React.useMemo(
-    () =>
-      entries
-        .map(([name, score]) => ({
-          name,
-          score: Number(score),
-          pct: toPct(Number(score)),
-          avatar: loadAvatarFor(name),
-        }))
-        .sort((a, b) => a.pct - b.pct),
-    [entries]
-  );
-
-  // cluster per vicinanza orizzontale
-  const minPct = React.useMemo(() => {
-    if (!w) return 1.4; // fallback
-    const minPx = Math.max(avatarSz * 0.9, 16); // distanza minima tra cluster
-    return (minPx / w) * 100;
-  }, [w, avatarSz]);
-
-  type Cluster = { pct: number; people: typeof points };
-  const clusters: Cluster[] = React.useMemo(() => {
-    const out: Cluster[] = [];
-    let cur: typeof points = [];
-    for (const p of points) {
-      if (!cur.length || Math.abs(p.pct - cur[cur.length - 1].pct) < minPct) {
-        cur.push(p);
-      } else {
-        const pct = cur.reduce((a, b) => a + b.pct, 0) / cur.length;
-        out.push({ pct, people: cur });
-        cur = [p];
-      }
-    }
-    if (cur.length) {
-      const pct = cur.reduce((a, b) => a + b.pct, 0) / cur.length;
-      out.push({ pct, people: cur });
-    }
-    return out;
-  }, [points, minPct]);
-
-  // util: rappresentante del cluster (preferisci l'utente corrente, altrimenti il più alto, tie -> alfabetico)
-  function pickRep(c: Cluster) {
-    const meIdx = currentUser ? c.people.findIndex(p => p.name === currentUser) : -1;
-    if (meIdx >= 0) return c.people[meIdx];
-    return c.people
-      .slice()
-      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))[0];
-  }
-
-  return (
-    <div className="w-full">
-      <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-        <span>Avg {entries.length ? `(${entries.length} votes)` : ""}</span>
-        <span>10</span>
-      </div>
-
-      <div
-        ref={ref}
-        className="relative w-full overflow-visible rounded-full bg-zinc-800"
-        style={{ height: trackH }}
-      >
-        {/* riempimento fino alla media */}
-        {avg !== null && (
-          <div
-            className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
-            style={{ width: `${toPct(avg)}%` }}
-          />
-        )}
-
-        {/* cluster */}
-        {clusters.map((c, i) => {
-          const rep = pickRep(c);
-          const others = c.people.length - 1;
-          const left = `calc(${c.pct}% - 1px)`;
-          const ring =
-            rep.name === currentUser ? "ring-white" : ringByScore(rep.score);
-          const tooltip = c.people
-            .map(p => `${p.name} ${formatScore(p.score)}`)
-            .join(", ");
-
-          return (
-            <div key={i} className="absolute pointer-events-none" style={{ left }}>
-              {/* tick del cluster */}
-              <div
-                className="absolute top-0 w-[2px] -translate-x-1/2 rounded-full bg-white/90 shadow-[0_0_0_2px_rgba(0,0,0,0.5)]"
-                style={{ height: tickH }}
-              />
-              {/* avatar rappresentante + badge count */}
-              <div
-                className="absolute -translate-x-1/2"
-                style={{ top: -(avatarSz + 6) }}
-                title={tooltip}
-              >
-                {rep.avatar ? (
-                  <img
-                    src={rep.avatar}
-                    alt={rep.name}
-                    className={`rounded-full object-cover ring-2 ${ring}`}
-                    style={{ width: avatarSz, height: avatarSz }}
-                  />
-                ) : (
-                  <div
-                    className={`grid place-items-center rounded-full bg-zinc-900 text-[10px] font-bold text-white ring-2 ${ring}`}
-                    style={{ width: avatarSz, height: avatarSz }}
-                  >
-                    {(rep.name?.[0] || "?").toUpperCase()}
-                  </div>
-                )}
-
-                {others > 0 && (
-                  <div
-                    className="absolute grid place-items-center rounded-full border border-zinc-900 bg-white text-[10px] font-bold text-zinc-900 shadow dark:bg-zinc-200"
-                    style={{
-                      width: countSz,
-                      height: countSz,
-                      right: -countSz * BADGE_SHIFT,
-                      bottom: -countSz * 0.2,
-                    }}
-                  >
-                    +{others}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {showScale && (
-        <div className="mt-1 flex justify-between text-[11px] text-zinc-500">
-          <span>1</span><span>5</span><span>10</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Pill dei numeri scala (1 / 5 / 10) — light/dark friendly
 function ScaleLabels({ className = "" }: { className?: string }) {
   const pill =
@@ -1349,12 +689,8 @@ function ActiveVoting({
     ? movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
     : "";
 
-  const poster = movie?.poster_path ? posterUrl(movie.poster_path, "w342") : "";
+  const poster = movie?.poster_path ? getPosterUrl(movie.poster_path, "w342") : "";
 
-  /* ---------- Sub-components ---------- */
-
-  // Pill “Picked by” unificata
-  
   function PickedByPill({ name }: { name: string }) {
     const avatar = loadAvatarFor(name);
     const initial = name?.[0]?.toUpperCase() || "?";
@@ -1388,36 +724,6 @@ function ActiveVoting({
           <div className="-mb-0.5">Picked by</div>
         </div>
         <div className="ml-1 text-sm font-semibold">{name}</div>
-      </div>
-    );
-  }
-
-  // Avatar iniziale colorato per chip votanti
-  function InitialCircle({ name, score }: { name: string; score: number }) {
-    const ring =
-      score >= 8 ? "ring-emerald-500/60" :
-      score >= 6 ? "ring-amber-400/60"  :
-                   "ring-rose-500/60";
-
-    return (
-      <div
-        className={`grid h-6 w-6 place-items-center rounded-full text-[11px] font-bold ring-2 ${ring}`}
-        title={name}
-      >
-        {(name?.[0] || "?").toUpperCase()}
-      </div>
-    );
-  }
-  function VoterChip({ name, score }: { name: string; score: number }) {
-    return (
-      <div className="inline-flex items-center gap-2 rounded-2xl border border-zinc-700/80 bg-zinc-900/70 px-2.5 py-1 text-sm text-zinc-100">
-        <InitialCircle name={name} score={score} />
-        <span className="truncate max-w-[8.5rem]">{name}</span>
-        <span className="mx-1 text-zinc-500">•</span>
-        <span className="font-semibold">{formatScore(score)}</span>
-        {name === currentUser && (
-          <span className="ml-1 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-bold text-zinc-900">You</span>
-        )}
       </div>
     );
   }
@@ -1503,7 +809,7 @@ function ActiveVoting({
             <div className="flex items-center gap-6">
               {avg !== null && <AvgRing value={avg} />}
               <div className="flex-1">
-                <VotesBarWithAvatars
+                <VotesBar
                   entries={entries}       // <-- Object.entries(ratings)
                   avg={avg}
                   currentUser={currentUser}
@@ -1620,7 +926,12 @@ function ActiveVoting({
             ) : (
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {sorted.map(([name, score]) => (
-                  <VoterChip key={name} name={name} score={Number(score)} />
+                  <VoterChip
+                    key={name}
+                    name={name}
+                    score={Number(score)}
+                    currentUser={currentUser}
+                  />
                 ))}
               </div>
             )}
@@ -1637,13 +948,6 @@ function ActiveVoting({
     </div>
   );
 }
-
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pretty HistoryCardExtended
-// ─────────────────────────────────────────────────────────────────────────────
-
 
 function ChipAvatar({ name, score }: { name: string; score: number }) {
   const avatar = loadAvatarFor(name);
@@ -1669,24 +973,6 @@ function ChipAvatar({ name, score }: { name: string; score: number }) {
   );
 }
 
-// ---- Il chip: avatar + nome + • + stella + punteggio
-function VoterChip({ name, score }: { name: string; score: number }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white/70 px-2.5 py-1 text-xs text-gray-900 shadow-sm
-                 backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-200"
-      title={`${name}: ${score}`}
-    >
-      <ChipAvatar name={name} score={Number(score)} />
-      <span className="max-w-[9rem] truncate font-medium">{name}</span>
-      <span className="mx-0.5 h-1 w-1 rounded-full bg-gray-400/70 dark:bg-zinc-500/70" />
-      <span className="inline-flex items-center gap-0.5 font-semibold">
-        {formatScore(Number(score))}
-      </span>
-    </span>
-  );
-}
-
 
 // ===== Helpers per enfasi voti (solo per questi componenti) =====
 const clamp10 = (n: number) => Math.max(1, Math.min(10, Number(n) || 0));
@@ -1695,35 +981,6 @@ const scoreBg = (n: number) => `hsl(${scoreHue(n)} 75% 50%)`;
 const scoreGrad = (n: number) =>
   `linear-gradient(90deg, hsl(${scoreHue(n)} 70% 45%) 0%, hsl(${scoreHue(n)} 70% 55%) 100%)`;
 const scorePct = (n: number) => `${((clamp10(n) - 1) / 9) * 100}%`;
-
-export function ScoreDonut({ value, size = 64 }: { value: number; size?: number }) {
-  // style identico al tuo AvgRing (r=26, stroke=8 su viewBox 64)
-  const r = 26;
-  const c = 2 * Math.PI * r;
-  const pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
-
-  return (
-    <div className="relative" style={{ width: size, height: size }}>
-      <svg viewBox="0 0 64 64" className="h-full w-full -rotate-90">
-        <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
-        <circle
-          cx="32"
-          cy="32"
-          r={r}
-          strokeWidth="8"
-          className="fill-none stroke-lime-400"
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={c - (pct / 100) * c}
-        />
-      </svg>
-      {/* numero centrale — bianco in dark mode */}
-      <div className="absolute inset-0 grid place-items-center text-sm font-bold text-zinc-900 dark:text-white">
-        {formatScore(value)}
-      </div>
-    </div>
-  );
-}
 
 function ScoreRail({
   scores,
@@ -1784,239 +1041,6 @@ function MetaPill({ children, title }: { children: React.ReactNode; title?: stri
     >
       {children}
     </span>
-  );
-}
-
-/* ===========================
- *  HISTORY CARD – EXTENDED
- * =========================== */
-function HistoryCardExtended({
-  v,
-  onEdit,
-  onMetaResolved,
-}: {
-  v: any;
-  onEdit?: (id: any) => void;
-  onMetaResolved?: (viewingId: any, nextMovie: any) => void;
-}) {
-  const ratings = (v.ratings || {}) as Record<string, number>;
-  const entries = Object.entries(ratings) as [string, number][];
-  const scores = entries.map(([, n]) => Number(n));
-  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-
-  const releaseYear =
-    v?.movie?.release_year ||
-    (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
-
-  const genreLine = Array.isArray(v?.movie?.genres)
-    ? v.movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
-    : "";
-
-  // ----- lazy meta (poster/overview) + cache -----
-  const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>({
-    poster_path: v?.movie?.poster_path,
-    overview: v?.movie?.overview,
-  });
-  React.useEffect(() => {
-    setMeta({
-      poster_path: v?.movie?.poster_path,
-      overview: v?.movie?.overview,
-    });
-  }, [v?.id, v?.movie?.id, v?.movie?.poster_path, v?.movie?.overview]);
-
-  const persistOnceRef = React.useRef(false);
-  const tryPersist = (cand: { poster_path?: string; overview?: string }) => {
-    if (persistOnceRef.current) return;
-    const needPoster = !v?.movie?.poster_path && cand.poster_path;
-    const needOverview = !v?.movie?.overview && (cand.overview && cand.overview.trim());
-    if (needPoster || needOverview) {
-      persistOnceRef.current = true;
-      const nextMovie = { ...v.movie, ...cand };
-      onMetaResolved?.(v.id, nextMovie);
-    }
-  };
-
-  const inFlightTitleRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    const title = (v?.movie?.title || "").trim();
-    if (!title) return;
-
-    const needPoster = !meta?.poster_path;
-    const needOverview = !meta?.overview || meta.overview.trim().length === 0;
-    if (!needPoster && !needOverview) return;
-    if (inFlightTitleRef.current === title) return;
-    inFlightTitleRef.current = title;
-
-    // 1) cache
-    const cache = getMetaCache();
-    const cached = cache[title];
-    if (cached && (cached.poster_path || cached.overview)) {
-      setMeta((m) => {
-        const merged = {
-          poster_path: m.poster_path || cached.poster_path,
-          overview: m.overview || cached.overview,
-        };
-        tryPersist(merged);
-        return merged;
-      });
-      inFlightTitleRef.current = null;
-      return;
-    }
-
-    // 2) fetch
-    (async () => {
-      try {
-        const fetched = await fetchMetaForTitle(title);
-        if (fetched) {
-          setMeta((m) => {
-            const merged = {
-              poster_path: m.poster_path || fetched.poster_path,
-              overview: m.overview || fetched.overview,
-            };
-            tryPersist(merged);
-            return merged;
-          });
-          const c = getMetaCache();
-          c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
-          setMetaCache(c);
-        }
-      } finally {
-        inFlightTitleRef.current = null;
-      }
-    })();
-  }, [v?.movie?.title, meta?.poster_path, meta?.overview]);
-  // -----------------------------------------------
-
-  const poster = meta?.poster_path ? posterUrl(meta.poster_path, "w342") : "";
-  const overview = (meta?.overview || "").trim();
-
-  // --- UI helpers (ring & bar) ---
-  const AvgRing = ({ value }: { value: number }) => {
-    const r = 26, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
-    return (
-      <div className="relative h-16 w-16">
-        <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-lime-400"
-                  strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}/>
-        </svg>
-        <div className="absolute inset-0 grid place-items-center text-sm font-bold">
-          {formatScore(value)}
-        </div>
-      </div>
-    );
-  };
-  const VotesBar = ({ scores, avg }: { scores: number[]; avg: number | null }) => {
-    const toPct = (n: number) => ((n - 1) / 9) * 100;
-    return (
-      <div className="w-full">
-        <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-          <span>Avg {scores.length ? `(${scores.length} votes)` : ""}</span>
-          <span>10</span>
-        </div>
-        <div className="relative h-4 w-full overflow-hidden rounded-full bg-zinc-800">
-          {avg !== null && (
-            <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-lime-500 to-lime-400"
-                 style={{ width: `${toPct(avg)}%` }} />
-          )}
-          {scores.map((s, i) => (
-            <div key={i}
-                 className="pointer-events-none absolute top-1/2 h-6 w-[2px] -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_2px_rgba(0,0,0,0.6)]"
-                 style={{ left: `calc(${toPct(s)}% - 1px)` }}
-                 title={formatScore(s)} />
-          ))}
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
-      {/* Header */}
-      <div className="mb-3 flex items-center gap-3">
-        {v.picked_by && (
-          <>
-            <PickedByBadge name={v.picked_by} />
-            <div className="mx-1 text-gray-300">•</div>
-          </>
-        )}
-
-        <h3 className="min-w-0 text-lg font-semibold leading-tight">
-          <span className="break-words">{v.movie?.title || "Untitled"}</span>
-          {releaseYear && <span className="ml-2 text-gray-500">({releaseYear})</span>}
-        </h3>
-
-        {onEdit && (
-          <button
-            className="ml-2 rounded-full border px-2.5 py-1 text-xs dark:border-zinc-700"
-            onClick={() => onEdit(v.id)}
-          >
-            Edit
-          </button>
-        )}
-
-        {v.started_at && (
-          <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
-            {new Date(v.started_at).toLocaleString()}
-          </span>
-        )}
-      </div>
-
-      {/* Layout: poster grande + info a destra */}
-      <div className="grid gap-5 md:grid-cols-[176px,1fr]">
-        <div className="flex items-start justify-center">
-          {poster ? (
-            <img
-              src={poster}
-              alt={v.movie?.title}
-              className="h-[264px] w-[176px] rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
-            />
-          ) : (
-            <div className="flex h-[264px] w-[176px] items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
-              No poster
-            </div>
-          )}
-        </div>
-
-        <div className="min-w-0">
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
-            {releaseYear && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">📅 {releaseYear}</span>}
-            {Number(v?.movie?.runtime) > 0 && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {v.movie.runtime} min</span>}
-            {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
-            {typeof v?.movie?.imdb_rating === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(v.movie.imdb_rating)}</span>
-            ) : typeof v?.movie?.tmdb_vote_average === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(v.movie.tmdb_vote_average)}</span>
-            ) : null}
-            {typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0 && (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                {v.movie.tmdb_vote_count.toLocaleString()} votes
-              </span>
-            )}
-          </div>
-
-          <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
-            {overview || "No description available."}
-          </p>
-
-          <div className="flex items-center gap-4">
-            {avg !== null && <ScoreDonut value={avg} />}
-            <div className="flex-1">
-              <VotesBarWithAvatars entries={entries} avg={avg} />
-            </div>
-          </div>
-          {entries.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {Object.entries(ratings)
-                .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
-                .map(([name, score]) => (
-                  <VoterChip key={name} name={name} score={Number(score)} />
-                ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -2094,7 +1118,7 @@ function PosterCell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [v?.id, v?.movie?.id, v?.movie?.title, posterPath]);
 
-  const poster = posterPath ? posterUrl(posterPath, "w342") : "";
+  const poster = posterPath ? getPosterUrl(posterPath, "w342") : "";
   const year =
     v?.movie?.release_year ||
     (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
@@ -2130,9 +1154,7 @@ function PosterCell({
   );
 }
 
-
 /** Modal dettagli: poster + overview + meta + recap voti */
-
 function ViewingModal({
   v,
   onClose,
@@ -2179,7 +1201,7 @@ function ViewingModal({
       ? v.movie.tmdb_vote_count
       : null;
 
-  const poster = meta?.poster_path ? posterUrl(meta.poster_path, "w342") : "";
+  const poster = meta?.poster_path ? getPosterUrl(meta.poster_path, "w342") : "";
   const overview = (meta?.overview || "").trim();
 
   // ---- VOTI ----
@@ -2294,7 +1316,7 @@ React.useEffect(() => {
                 </div>
               )}
               <div className="flex-1">
-                <VotesBarWithAvatars
+                <VotesBar
                   entries={entries}
                   avg={avg}
                   currentUser={currentUser}
@@ -2311,7 +1333,12 @@ React.useEffect(() => {
                     (a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0])
                   )
                   .map(([name, score]) => (
-                    <VoterChip key={name} name={name} score={Number(score)} />
+                    <VoterChip
+                      key={name}
+                      name={name}
+                      score={Number(score)}
+                      currentUser={currentUser || ""}
+                    />
                   ))}
               </div>
             )}
@@ -2410,415 +1437,7 @@ function HistoryFilters({
   );
 }
 
-// ============================
-// Profile – avatar + list of movies you picked (reuse HistoryCardExtended)
-// ============================
-function Profile({ user, history, onAvatarSaved }: { user: string; history: any[]; onAvatarSaved?: () => void }) {
-  const profileKey = `${K_PROFILE_PREFIX}${user}`;
-  const [avatar, setAvatar] = useState<string | null>(loadAvatarFor(user));
-  const pickedByMe = useMemo(() => history.filter((h) => h?.picked_by === user), [history, user]);
-
-  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = String(reader.result || "");
-      setAvatar(dataUrl);
-      lsSetJSON(profileKey, { avatar: dataUrl });
-      onAvatarSaved?.();
-    };
-    reader.readAsDataURL(file);
-  }
-  function clearAvatar() {
-    localStorage.removeItem(profileKey);
-    setAvatar(null);
-    onAvatarSaved?.();
-  }
-
-  return (
-    <>
-      <Card>
-        <h3 className="mb-3 text-lg font-semibold">👤 Your profile</h3>
-        <div className="flex items-start gap-3">
-          {avatar ? (
-            <img src={avatar} className="h-20 w-20 rounded-full object-cover" alt={user} />
-          ) : (
-            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gray-200 text-xl font-bold">
-              {user.slice(0, 2).toUpperCase()}
-            </div>
-          )}
-          <div>
-            <div className="text-sm text-gray-700 dark:text-zinc-300">
-              Logged in as <b>{user}</b>
-            </div>
-            <div className="mt-2 flex gap-2">
-              <label className="cursor-pointer rounded-xl border px-3 py-2 text-sm dark:border-zinc-700">
-                Change image
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={onFile}
-                />
-
-              </label>
-              {avatar && (
-                <button className="rounded-xl border px-3 py-2 text-sm dark:border-zinc-700" onClick={clearAvatar}>
-                  Remove
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      <Card>
-        <h3 className="mb-3 text-lg font-semibold">🎬 Movies you picked</h3>
-        <div className="grid gap-3">
-          {pickedByMe.length === 0 ? (
-            <div className="text-sm text-gray-600 dark:text-zinc-400">No movies yet. Start one from the “Vote” tab.</div>
-          ) : (
-            pickedByMe
-              .slice()
-              .sort((a, b) => {
-                const ta = a?.started_at ? new Date(a.started_at).getTime() : 0;
-                const tb = b?.started_at ? new Date(b.started_at).getTime() : 0;
-                if (ta !== tb) return tb - ta;
-                if (typeof a.id === "number" && typeof b.id === "number") return a.id - b.id;
-                return 0;
-              })
-              .map((v) => <HistoryCardExtended key={v.id} v={v} />)
-          )}
-        </div>
-      </Card>
-    </>
-  );
-}
-
-function Stats({
-    history,
-    backfillRuntime,   // optional: () => void
-    isLoading = false, // optional
-  }: {
-    history: any[];
-    backfillRuntime?: () => void;
-    isLoading?: boolean;
-  }) {
-    // Automatic backfill start if provided
-    React.useEffect(() => {
-      if (!backfillRuntime) return;
-      const hasRt = history.some((h) => Number((h?.movie as any)?.runtime) > 0);
-      if (!hasRt && !isLoading && history.length > 0) {
-        backfillRuntime();
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [history, isLoading, backfillRuntime]);
-  
-    // Helper: average of a ratings record
-    const avgOf = (r?: Record<string, number> | null) => {
-      if (!r) return null;
-      const vals = Object.values(r).map(Number);
-      if (!vals.length) return null;
-      return vals.reduce((a, b) => a + b, 0) / vals.length;
-    };
-  
-    // ---- Aggregations
-    const givenMap = new Map<string, { sum: number; n: number }>();     // votes given
-    const receivedMap = new Map<string, { sum: number; n: number }>();  // average received as picker
-    const genreCount = new Map<string, number>();                       // genre counts
-    let totalMinutes = 0;
-    let totalMinutesKnown = 0;
-    const movieStats: Array<{ id: any; title: string; avg: number; votes: number; date: number }> = [];
-  
-    for (const v of history) {
-      const ratings = (v?.ratings || {}) as Record<string, number>;
-      const entries = Object.entries(ratings);
-  
-      // votes given per user
-      for (const [user, score] of entries) {
-        const m = givenMap.get(user) || { sum: 0, n: 0 };
-        m.sum += Number(score);
-        m.n += 1;
-        givenMap.set(user, m);
-      }
-  
-      // average received by the picker
-      const avg = avgOf(ratings);
-      if (avg != null && v?.picked_by) {
-        const r = receivedMap.get(v.picked_by) || { sum: 0, n: 0 };
-        r.sum += avg;
-        r.n += 1;
-        receivedMap.set(v.picked_by, r);
-      }
-  
-      // genres
-      const arr = (v?.movie?.genres || []) as Array<{ name: string }>;
-      arr.forEach((g) => {
-        const name = g?.name?.trim();
-        if (name) genreCount.set(name, (genreCount.get(name) || 0) + 1);
-      });
-  
-      // runtime
-      const rt = Number((v?.movie as any)?.runtime);
-      if (!Number.isNaN(rt) && rt > 0) {
-        totalMinutes += rt;
-        totalMinutesKnown += 1;
-      }
-  
-      // for top/flop
-      if (avg != null) {
-        movieStats.push({
-          id: v.id,
-          title: v?.movie?.title || "Untitled",
-          avg,
-          votes: entries.length,
-          date: v?.started_at ? new Date(v.started_at).getTime() : 0,
-        });
-      }
-    }
-  
-    // ---- Derived, sorted
-    const givenArr = Array.from(givenMap, ([user, { sum, n }]) => ({
-      user, avg: sum / Math.max(1, n), count: n,
-    })).sort((a, b) => b.count - a.count || a.user.localeCompare(b.user));
-  
-    const receivedArr = Array.from(receivedMap, ([user, { sum, n }]) => ({
-      user, avg: sum / Math.max(1, n), count: n,
-    })).sort((a, b) => b.avg - a.avg || b.count - a.count);
-  
-    const genresArr = Array.from(genreCount, ([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  
-    const bestMovies = movieStats.slice().sort((a, b) => b.avg - a.avg || b.votes - a.votes).slice(0, 5);
-    const worstMovies = movieStats.slice().sort((a, b) => a.avg - b.avg || b.votes - a.votes).slice(0, 5);
-  
-    const harshest = givenArr.slice().sort((a, b) => a.avg - b.avg).slice(0, 3);
-    const kindest  = givenArr.slice().sort((a, b) => b.avg - a.avg).slice(0, 3);
-  
-    // Minutes label (with loading state)
-    const minutesLabel =
-      totalMinutesKnown > 0
-        ? `${totalMinutes} min (across ${totalMinutesKnown} movies with known runtime)`
-        : isLoading
-          ? "Fetching runtimes…"
-          : "—";
-  
-    const LoadingRow = () => (
-      <div className="rounded-xl border px-3 py-2 text-sm text-gray-500 dark:border-zinc-700 etdark:text-zinc-400">
-        <span className="animate-pulse">Loading…</span>
-      </div>
-    );
-  
-    return (
-      <div className="grid gap-4">
-        {/* KPI row */}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Total movies</div>
-            <div className="text-2xl font-bold">{history.length}</div>
-          </Card>
-  
-          <Card>
-            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Minutes watched</div>
-            <div className="flex items-center">
-              <div className="text-2xl font-bold">{minutesLabel}</div>
-              {isLoading && <span className="ml-2 animate-pulse text-lg">⏳</span>}
-            </div>
-            {(!isLoading && totalMinutesKnown === 0) && (
-              <p className="mt-1 text-xs text-gray-500 dark:text-zinc-400">
-                No runtime available yet
-                {backfillRuntime ? " — will be fetched automatically." : "."}
-              </p>
-            )}
-          </Card>
-  
-          <Card>
-            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Distinct genres</div>
-            <div className="text-2xl font-bold">{genresArr.length}</div>
-          </Card>
-  
-          <Card>
-            <div className="text-xs uppercase text-gray-500 dark:text-zinc-400">Total votes</div>
-            <div className="text-2xl font-bold">
-              {history.reduce((acc, v) => acc + Object.keys(v?.ratings || {}).length, 0)}
-            </div>
-          </Card>
-        </div>
-  
-        {/* Most watched genres */}
-        <Card>
-          <h3 className="mb-3 text-lg font-semibold">🎭 Most watched genres</h3>
-          {isLoading && genresArr.length === 0 ? (
-            <LoadingRow />
-          ) : genresArr.length === 0 ? (
-            <div className="text-sm text-gray-600 dark:text-zinc-400">
-              No genre data (make sure movies have TMDB genres).
-            </div>
-          ) : (
-            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {genresArr.slice(0, 12).map((g) => (
-                <li
-                  key={g.name}
-                  className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                >
-                  <span>{g.name}</span>
-                  <span className="rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700">{g.count}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-  
-        {/* Users: most votes / harshest / kindest */}
-        <div className="grid gap-3 lg:grid-cols-3">
-          <Card>
-            <h3 className="mb-3 text-lg font-semibold">🗳️ Most votes given</h3>
-            {isLoading && givenArr.length === 0 ? (
-              <LoadingRow />
-            ) : givenArr.length === 0 ? (
-              <div className="text-sm text-gray-600 dark:text-zinc-400">No votes yet.</div>
-            ) : (
-              <ul className="grid gap-2">
-                {givenArr.slice(0, 8).map((u) => (
-                  <li
-                    key={u.user}
-                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                  >
-                    <span className="truncate">{u.user}</span>
-                    <span className="text-xs">
-                      <b>{u.count}</b> votes · avg <b>{formatScore(u.avg)}</b>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-  
-          <Card>
-            <h3 className="mb-3 text-lg font-semibold">🥶 Harshest (lowest avg)</h3>
-            {isLoading && harshest.length === 0 ? (
-              <LoadingRow />
-            ) : harshest.length === 0 ? (
-              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
-            ) : (
-              <ul className="grid gap-2">
-                {harshest.map((u) => (
-                  <li
-                    key={u.user}
-                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                  >
-                    <span className="truncate">{u.user}</span>
-                    <span className="text-xs">avg <b>{formatScore(u.avg)}</b> · {u.count} votes</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-  
-          <Card>
-            <h3 className="mb-3 text-lg font-semibold">💖 Kindest (highest avg)</h3>
-            {isLoading && kindest.length === 0 ? (
-              <LoadingRow />
-            ) : kindest.length === 0 ? (
-              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
-            ) : (
-              <ul className="grid gap-2">
-                {kindest.map((u) => (
-                  <li
-                    key={u.user}
-                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                  >
-                    <span className="truncate">{u.user}</span>
-                    <span className="text-xs">avg <b>{formatScore(u.avg)}</b> · {u.count} votes</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-  
-        {/* Picker: average received on movies they picked */}
-        <Card>
-          <h3 className="mb-3 text-lg font-semibold">🎬 Avg score received by pickers</h3>
-          {isLoading && receivedArr.length === 0 ? (
-            <LoadingRow />
-          ) : receivedArr.length === 0 ? (
-            <div className="text-sm text-gray-600 dark:text-zinc-400">No movies with votes yet.</div>
-          ) : (
-            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {receivedArr.map((p) => (
-                <li
-                  key={p.user}
-                  className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                >
-                  <span className="truncate">{p.user}</span>
-                  <span className="text-xs">
-                    avg <b>{formatScore(p.avg)}</b> · {p.count} movies
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-  
-        {/* Best / Worst movies */}
-        <div className="grid gap-3 lg:grid-cols-2">
-          <Card>
-            <h3 className="mb-3 text-lg font-semibold">🏆 Top 5 movies</h3>
-            {isLoading && bestMovies.length === 0 ? (
-              <LoadingRow />
-            ) : bestMovies.length === 0 ? (
-              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
-            ) : (
-              <ol className="grid gap-2">
-                {bestMovies.map((m, i) => (
-                  <li
-                    key={m.id}
-                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                  >
-                    <span className="truncate">{i + 1}. {m.title}</span>
-                    <span className="text-xs">avg <b>{formatScore(m.avg)}</b> · {m.votes} votes</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </Card>
-  
-          <Card>
-            <h3 className="mb-3 text-lg font-semibold">💔 Flop 5 movies</h3>
-            {isLoading && worstMovies.length === 0 ? (
-              <LoadingRow />
-            ) : worstMovies.length === 0 ? (
-              <div className="text-sm text-gray-600 dark:text-zinc-400">N/A</div>
-            ) : (
-              <ol className="grid gap-2">
-                {worstMovies.map((m, i) => (
-                  <li
-                    key={m.id}
-                    className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                  >
-                    <span className="truncate">{i + 1}. {m.title}</span>
-                    <span className="text-xs">avg <b>{formatScore(m.avg)}</b> · {m.votes} votes</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </Card>
-        </div>
-  
-        {/* Runtime note */}
-        <p className="text-xs text-gray-500 dark:text-zinc-400">
-          * Total minutes only consider movies with <code>runtime</code> known from TMDB.
-        </p>
-      </div>
-    );
-  }
-  
-  
-  
 // ==== Import/Export history (cn_viewings) ====
-// Salva un file JSON con la history corrente
 function exportHistoryJSON(list: any[]) {
   const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -2830,25 +1449,7 @@ function exportHistoryJSON(list: any[]) {
   URL.revokeObjectURL(url);
 }
 
-// Legge un file JSON e lo mette in cn_viewings
-function importHistoryFromFile(
-  file: File,
-  onDone: (list: any[]) => void
-) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = JSON.parse(String(reader.result || "[]"));
-      if (!Array.isArray(parsed)) throw new Error("File non valido: atteso un array");
-      onDone(parsed);
-    } catch (e: any) {
-      alert(e?.message || "Errore nel file");
-    }
-  };
-  reader.readAsText(file);
-}
-
-  function useLazyMetaForViewing(
+function useLazyMetaForViewing(
   viewing: any | null,
   onMetaResolved?: (viewingId: any, nextMovie: any) => void
 ) {
@@ -2928,7 +1529,7 @@ function HistoryPosterTile({
   onResolve?: (id: any, nextMovie: any) => void;
 }) {
   const meta = useLazyMetaForViewing(v, onResolve);
-  const poster = meta?.poster_path ? posterUrl(meta.poster_path, "w342") : "";
+  const poster = meta?.poster_path ? getPosterUrl(meta.poster_path, "w342") : "";
 
   return (
     <button
@@ -2952,12 +1553,7 @@ function HistoryPosterTile({
   );
 }
 
-
-
-// ============================
 // App
-// ============================
-
 export default function CinemaNightApp() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme());
   useEffect(() => applyTheme(theme), [theme]);
