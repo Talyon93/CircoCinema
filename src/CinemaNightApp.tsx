@@ -60,6 +60,7 @@ import { Login } from "./Pages/Login";
 import VotePage from "./Pages/Vote";
 import { EditViewingDialog } from "./Components/EditViewingDialog";
 
+import { TableCellsIcon, ArrowsPointingOutIcon, ArrowDownTrayIcon } from "@heroicons/react/24/outline";
 
 // ---------------------------------
 
@@ -507,7 +508,7 @@ export default function CinemaNightApp() {
   const [history, setHistory] = useState<any[]>([]);
   const [activeVote, setActiveVote] = useState<any | null>(null);
   const [activeRatings, setActiveRatings] = useState<Record<string, number>>({});
-  const [historyMode, setHistoryMode] = useState<"extended" | "compact">("extended");
+  const [historyMode, setHistoryMode] = useState<"extended" | "compact">("compact");
 
   // Filters / sort
   const [filterPicker, setFilterPicker] = useState<string>("");
@@ -905,196 +906,236 @@ export default function CinemaNightApp() {
             </div>
           )}
 
-          {tab === "history" && (
-            <div className="mt-2">
-              <Card>
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <button
-                      className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700"
-                      onClick={() => setHistoryMode(historyMode === "extended" ? "compact" : "extended")}
-                    >
-                      Switch to {historyMode === "extended" ? "Compact" : "Extended"} view
-                    </button>
-                    <button className="rounded-xl border px-3 py-1 text-sm dark:border-zinc-700" onClick={() => exportHistoryJSON(history)}>
-                      Export JSON
-                    </button>
-                  </div>
-                </div>
+{tab === "history" && (
+  <div className="mt-2">
+    <Card>
+      {/* Modals / editing */}
+      {editingViewing && (
+        <EditViewingDialog
+          open
+          viewing={history.find((h) => h.id === editingViewing.id)!}
+          knownUsers={knownUsers}
+          onClose={() => setEditingViewing(null)}
+          onSave={async (next) => {
+            const list = history.map((h) => (h.id === next.id ? next : h));
+            setHistory(list);
+            await persistHistoryLive(list);
+            setEditingViewing(null);
+          }}
+          onDelete={async () => {
+            await deleteViewing(editingViewing.id);
+            setEditingViewing(null);
+          }}
+        />
+      )}
 
-                {editingViewing && (
-                  <EditViewingDialog
-                    open
-                    viewing={history.find((h) => h.id === editingViewing.id)!}
-                    knownUsers={knownUsers}
-                    onClose={() => setEditingViewing(null)}
-                    onSave={async (next) => {
-                      const list = history.map((h) => (h.id === next.id ? next : h));
-                      setHistory(list);
-                      await persistHistoryLive(list);
-                      setEditingViewing(null);
-                    }}
-                    onDelete={async () => {
-                      await deleteViewing(editingViewing.id);
-                      setEditingViewing(null);
-                    }}
-                  />
-                )}
+      {/* Filters */}
+      <div className="grid gap-3 md:grid-cols-4">
+        <div className="flex flex-col">
+          <label className="text-xs text-gray-600 dark:text-zinc-400">Picked by</label>
+          <select
+            className="rounded-xl border border-gray-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
+            value={filterPicker}
+            onChange={(e) => setFilterPicker(e.target.value)}
+          >
+            <option value="">All</option>
+            {pickerOptions.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </div>
 
-                {/* Filters */}
-                <div className="grid gap-3 md:grid-cols-4">
-                  <div className="flex flex-col">
-                    <label className="text-xs text-gray-600 dark:text-zinc-400">Picked by</label>
-                    <select
-                      className="rounded-xl border border-gray-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
-                      value={filterPicker}
-                      onChange={(e) => setFilterPicker(e.target.value)}
-                    >
-                      <option value="">All</option>
-                      {pickerOptions.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+        <div className="flex flex-col">
+          <label className="text-xs text-gray-600 dark:text-zinc-400">Genre</label>
+          <select
+            className="rounded-xl border border-gray-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
+            value={filterGenre}
+            onChange={(e) => setFilterGenre(e.target.value)}
+          >
+            <option value="">All</option>
+            {genreOptions.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
+        </div>
 
-                  <div className="flex flex-col">
-                    <label className="text-xs text-gray-600 dark:text-zinc-400">Genre</label>
-                    <select
-                      className="rounded-xl border border-gray-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
-                      value={filterGenre}
-                      onChange={(e) => setFilterGenre(e.target.value)}
-                    >
-                      <option value="">All</option>
-                      {genreOptions.map((g) => (
-                        <option key={g} value={g}>
-                          {g}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+        <div className="flex flex-col">
+          <label className="text-xs text-gray-600 dark:text-zinc-400">Sort by</label>
+          <select
+            className="rounded-xl border border-gray-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
+            value={sortKey}
+            onChange={(e) =>
+              setSortKey(
+                e.target.value as
+                  | "date-desc"
+                  | "date-asc"
+                  | "avg-desc"
+                  | "avg-asc"
+                  | "votes-desc"
+                  | "votes-asc"
+              )
+            }
+          >
+            <option value="date-desc">Date ↓ (newest)</option>
+            <option value="date-asc">Date ↑ (oldest)</option>
+            <option value="avg-desc">Average ↓</option>
+            <option value="avg-asc">Average ↑</option>
+            <option value="votes-desc">Votes count ↓</option>
+            <option value="votes-asc">Votes count ↑</option>
+          </select>
+        </div>
 
-                  <div className="flex flex-col">
-                    <label className="text-xs text-gray-600 dark:text-zinc-400">Sort by</label>
-                    <select
-                      className="rounded-xl border border-gray-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
-                      value={sortKey}
-                      onChange={(e) =>
-                        setSortKey(e.target.value as "date-desc" | "date-asc" | "avg-desc" | "avg-asc" | "votes-desc" | "votes-asc")
-                      }
-                    >
-                      <option value="date-desc">Date ↓ (newest)</option>
-                      <option value="date-asc">Date ↑ (oldest)</option>
-                      <option value="avg-desc">Average ↓</option>
-                      <option value="avg-asc">Average ↑</option>
-                      <option value="votes-desc">Votes count ↓</option>
-                      <option value="votes-asc">Votes count ↑</option>
-                    </select>
-                  </div>
+        {/* Reset a sinistra + icone a destra */}
+        <div className="flex items-end justify-between">
+          <button
+            className="rounded-xl border px-3 py-2 dark:border-zinc-700"
+            onClick={() => {
+              setFilterPicker("");
+              setFilterGenre("");
+              setSortKey("date-desc");
+            }}
+          >
+            Reset
+          </button>
 
-                  <div className="flex items-end">
-                    <button
-                      className="w-full rounded-xl border px-3 py-2 dark:border-zinc-700"
-                      onClick={() => {
-                        setFilterPicker("");
-                        setFilterGenre("");
-                        setSortKey("date-desc");
-                      }}
-                    >
-                      Reset
-                    </button>
-                  </div>
-                </div>
+          <div className="flex items-center gap-2">
+            {/* Switch view */}
+            <button
+              onClick={() =>
+                setHistoryMode(historyMode === "extended" ? "compact" : "extended")
+              }
+              title={
+                historyMode === "extended"
+                  ? "Switch to Compact view"
+                  : "Switch to Extended view"
+              }
+              aria-label={
+                historyMode === "extended"
+                  ? "Switch to Compact view"
+                  : "Switch to Extended view"
+              }
+              className="p-2 rounded-lg bg-zinc-800/70 hover:bg-zinc-700 border border-zinc-700 shadow-sm"
+            >
+              {historyMode === "extended" ? (
+                <TableCellsIcon className="h-6 w-6" />
+              ) : (
+                <ArrowsPointingOutIcon className="h-6 w-6" />
+              )}
+            </button>
 
-                {/* Results */}
-                <div className="mt-4 grid gap-3">
-                  {history.length === 0 && (
-                    <div className="text-sm text-gray-600 dark:text-zinc-400">No entries yet. Start a vote from the “Vote” tab.</div>
-                  )}
+            {/* Export JSON */}
+            <button
+              onClick={() => exportHistoryJSON(history)}
+              title="Export JSON"
+              aria-label="Export JSON"
+              className="p-2 rounded-lg bg-zinc-800/70 hover:bg-zinc-700 border border-zinc-700 shadow-sm"
+            >
+              <ArrowDownTrayIcon className="h-6 w-6" />
+            </button>
+          </div>
+        </div>
+      </div>
 
-                  {(() => {
-                    let L = history.slice();
-                    if (filterPicker) L = L.filter((h) => h?.picked_by === filterPicker);
-                    if (filterGenre) {
-                      L = L.filter((h) =>
-                        ((h?.movie?.genres as Array<{ name: string }>) || []).some((g) => g?.name === filterGenre)
-                      );
-                    }
+      {/* Results */}
+      <div className="mt-4 grid gap-3">
+        {history.length === 0 && (
+          <div className="text-sm text-gray-600 dark:text-zinc-400">
+            No entries yet. Start a vote from the “Vote” tab.
+          </div>
+        )}
 
-                    const getAvg = (r?: Record<string, number> | null) => {
-                      if (!r) return null;
-                      const vals = Object.values(r).map(Number);
-                      if (!vals.length) return null;
-                      return vals.reduce((a, b) => a + b, 0) / vals.length;
-                    };
+        {(() => {
+          let L = history.slice();
+          if (filterPicker) L = L.filter((h) => h?.picked_by === filterPicker);
+          if (filterGenre) {
+            L = L.filter((h) =>
+              ((h?.movie?.genres as Array<{ name: string }>) || []).some(
+                (g) => g?.name === filterGenre
+              )
+            );
+          }
 
-                    L.sort((a, b) => {
-                      const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
-                      const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
-                      const aAvg = getAvg(a?.ratings);
-                      const bAvg = getAvg(b?.ratings);
-                      const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
-                      const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
+          const getAvg = (r?: Record<string, number> | null) => {
+            if (!r) return null;
+            const vals = Object.values(r).map(Number);
+            if (!vals.length) return null;
+            return vals.reduce((a, b) => a + b, 0) / vals.length;
+          };
 
-                      switch (sortKey) {
-                        case "date-asc":
-                          return aDate - bDate;
-                        case "date-desc":
-                          return bDate - aDate;
-                        case "avg-asc":
-                          return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
-                        case "avg-desc":
-                          return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
-                        case "votes-asc":
-                          return aVotes - bVotes;
-                        case "votes-desc":
-                          return bVotes - aVotes;
-                        default:
-                          return 0;
-                      }
-                    });
+          L.sort((a, b) => {
+            const aDate = a?.started_at ? new Date(a.started_at).getTime() : 0;
+            const bDate = b?.started_at ? new Date(b.started_at).getTime() : 0;
+            const aAvg = getAvg(a?.ratings);
+            const bAvg = getAvg(b?.ratings);
+            const aVotes = a?.ratings ? Object.keys(a.ratings).length : 0;
+            const bVotes = b?.ratings ? Object.keys(b.ratings).length : 0;
 
-                    return historyMode === "compact" ? (
-                      <>
-                        <HistoryPosterGrid
-                          items={L}
-                          onOpen={setOpenViewing}
-                          onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
-                        />
+            switch (sortKey) {
+              case "date-asc":
+                return aDate - bDate;
+              case "date-desc":
+                return bDate - aDate;
+              case "avg-asc":
+                return (aAvg ?? -Infinity) - (bAvg ?? -Infinity);
+              case "avg-desc":
+                return (bAvg ?? -Infinity) - (aAvg ?? -Infinity);
+              case "votes-asc":
+                return aVotes - bVotes;
+              case "votes-desc":
+                return bVotes - aVotes;
+              default:
+                return 0;
+            }
+          });
 
-                        <ViewingModal
-                          v={openViewing}
-                          onClose={() => setOpenViewing(null)}
-                          onEdit={(id) => {
-                            setEditingViewing({
-                              id,
-                              title: L.find((x) => x.id === id)?.movie?.title || "",
-                            });
-                            setOpenViewing(null);
-                          }}
-                          onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
-                          currentUser={user}
-                        />
-                      </>
-                    ) : (
-                      L.map((v) => (
-                        <HistoryCardExtended
-                          key={v.id}
-                          v={v}
-                          onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
-                          onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
-                          // PASSO LA POSIZIONE IN CLASSIFICA GLOBALE
-                          rank={ranking.map.get(v.id)}
-                          total={ranking.total}
-                        />
-                      ))
-                    );
-                  })()}
-                </div>
-              </Card>
-            </div>
-          )}
+          return historyMode === "compact" ? (
+            <>
+              <HistoryPosterGrid
+                items={L}
+                onOpen={setOpenViewing}
+                onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+              />
+
+              <ViewingModal
+                v={openViewing}
+                onClose={() => setOpenViewing(null)}
+                onEdit={(id) => {
+                  setEditingViewing({
+                    id,
+                    title: L.find((x) => x.id === id)?.movie?.title || "",
+                  });
+                  setOpenViewing(null);
+                }}
+                onResolve={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+                currentUser={user}
+              />
+            </>
+          ) : (
+            L.map((v) => (
+              <HistoryCardExtended
+                key={v.id}
+                v={v}
+                onEdit={() =>
+                  setEditingViewing({ id: v.id, title: v?.movie?.title || "" })
+                }
+                onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+                rank={ranking.map.get(v.id)}
+                total={ranking.total}
+              />
+            ))
+          );
+        })()}
+      </div>
+    </Card>
+  </div>
+)}
+
+
+
 
           {tab === "profile" && (
             <div className="mt-2 grid gap-4">
