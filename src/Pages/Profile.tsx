@@ -2,6 +2,7 @@ import React from "react";
 import { Card } from "../Components/UI/Card";
 import { HistoryCardExtended } from "../Components/UI/HistoryCardExtended";
 import { fetchAvatarUrl, uploadAvatar, removeAvatar } from "../AvatarStorage";
+import { Film, Star, BarChart3 } from "lucide-react";
 
 type TabKey = "picked" | "rated" | "stats";
 
@@ -126,11 +127,11 @@ export function Profile({
     .slice(0, 9);
 
   // ---- UI: Tab selector (pillole con indicatore) ----
-  const tabs: Array<{ key: TabKey; label: string; count: number; icon: React.ReactNode }> = [
-    { key: "picked", label: "Picked", count: pickedByMe.length, icon: <span>🎬</span> },
-    { key: "rated", label: "Rated", count: ratedByMeOnOthers.length, icon: <span>⭐</span> },
-    { key: "stats", label: "Stats", count: myHistory.length, icon: <span>📊</span> },
-  ];
+    const tabs: Array<{ key: TabKey; label: string; count: number; icon: React.ReactNode }> = [
+    { key: "picked", label: "Picked", count: pickedByMe.length, icon: <Film className="h-4 w-4" /> },
+    { key: "rated", label: "Rated", count: ratedByMeOnOthers.length, icon: <Star className="h-4 w-4" /> },
+    { key: "stats", label: "Stats", count: myHistory.length, icon: <BarChart3 className="h-4 w-4" /> },
+    ];
   const activeIndex = tabs.findIndex((t) => t.key === tab);
 
   function sortByDateDesc(a: any, b: any) {
@@ -261,7 +262,6 @@ export function Profile({
         {/* Contenuto */}
         {tab === "picked" && (
           <>
-            <h3 className="mb-3 text-lg font-semibold">🎬 Movies you picked</h3>
             <div className="grid gap-3">
               {pickedByMe.length === 0 ? (
                 <div className="text-sm text-gray-600 dark:text-zinc-400">
@@ -283,8 +283,6 @@ export function Profile({
 
         {tab === "stats" && (
           <>
-            <h3 className="mb-3 text-lg font-semibold">📊 Your stats</h3>
-
             {/* KPI personali */}
             <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <KPI title="TOTAL MOVIES" value={totalMoviesIHaveVoted} />
@@ -379,7 +377,6 @@ function RatedGrid({ rows, user }: { rows: any[]; user: string }) {
   if (rows.length === 0) {
     return (
       <>
-        <h3 className="mb-3 text-lg font-semibold">⭐ Your ratings (minimal)</h3>
         <div className="text-sm text-zinc-400">You haven’t rated others’ picks yet.</div>
       </>
     );
@@ -387,7 +384,6 @@ function RatedGrid({ rows, user }: { rows: any[]; user: string }) {
 
   return (
     <>
-      <h3 className="mb-3 text-lg font-semibold">⭐ Your ratings (minimal)</h3>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((v) => {
           const title = v?.movie?.title || "Untitled";

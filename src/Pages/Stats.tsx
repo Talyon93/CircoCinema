@@ -3,7 +3,17 @@ import { Card } from "../Components/UI/Card";
 import { formatScore } from "../Utils/Utils";
 import { AvatarInline } from "../Components/UI/Avatar";
 import { PickedByBadge } from "../Components/UI/PickedByBadge";
-
+import {
+  ChartBarIcon,
+  PresentationChartLineIcon,
+  FilmIcon,
+  StarIcon,
+  HeartIcon,
+  TrophyIcon,
+  FireIcon,
+  UserCircleIcon,
+  BoltIcon,
+} from "@heroicons/react/24/outline";
 // =============================================================
 // Stats potenziato con grafici, badge e confronto IMDb
 // =============================================================
@@ -435,7 +445,11 @@ function DiffPill({
       {/* Timeline media nel tempo */}
       <Card>
         <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-lg font-semibold">📈 Average rating over time</h3>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <PresentationChartLineIcon className="h-5 w-5" />
+            Average rating over time
+          </h3>
+
           <span className="text-xs text-zinc-500">(by viewing date)</span>
         </div>
         <Sparkline data={timelineSorted} />
@@ -443,7 +457,10 @@ function DiffPill({
 
       {/* Generi più visti */}
       <Card>
-        <h3 className="mb-3 text-lg font-semibold">🎭 Most watched genres</h3>
+        <h3 className="flex items-center gap-2 text-lg font-semibold">
+          <ChartBarIcon className="h-5 w-5" />
+          Most watched genres
+        </h3>
         {isLoading && genresArr.length === 0 ? (
           <LoadingRow />
         ) : genresArr.length === 0 ? (
@@ -460,7 +477,11 @@ function DiffPill({
       {/* Leaderboards */}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card>
-          <h3 className="mb-3 text-lg font-semibold">🗳️ Most votes given</h3>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <StarIcon className="h-5 w-5" />
+  Most votes given
+</h3>
+
           {isLoading && givenArr.length === 0 ? (
             <LoadingRow />
           ) : givenArr.length === 0 ? (
@@ -484,7 +505,10 @@ function DiffPill({
         </Card>
 
         <Card>
-          <h3 className="mb-3 text-lg font-semibold">🥶 Harshest (lowest avg)</h3>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <FireIcon className="h-5 w-5 text-rose-500" />
+  Harshest
+</h3>
           {isLoading && givenArr.length === 0 ? (
             <LoadingRow />
           ) : (
@@ -506,7 +530,11 @@ function DiffPill({
         </Card>
 
         <Card>
-          <h3 className="mb-3 text-lg font-semibold">💖 Kindest (highest avg)</h3>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <HeartIcon className="h-5 w-5 text-emerald-500" />
+  Kindest
+</h3>
+
           {isLoading && givenArr.length === 0 ? (
             <LoadingRow />
           ) : (
@@ -530,7 +558,10 @@ function DiffPill({
 
       {/* Avg ricevuto dai picker */}
       <Card>
-        <h3 className="mb-3 text-lg font-semibold">🎬 Avg score received by pickers</h3>
+        <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <FilmIcon className="h-5 w-5" />
+  Avg score received by pickers
+</h3>
         {isLoading && receivedArr.length === 0 ? (
           <LoadingRow />
         ) : receivedArr.length === 0 ? (
@@ -553,7 +584,10 @@ function DiffPill({
       {/* Top / Flop */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <h3 className="mb-3 text-lg font-semibold">🏆 Top 5 movies</h3>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <TrophyIcon className="h-5 w-5" />
+  Top 5 movies
+</h3>
           {isLoading && bestMovies.length === 0 ? (
             <LoadingRow />
           ) : bestMovies.length === 0 ? (
@@ -577,7 +611,10 @@ function DiffPill({
         </Card>
 
         <Card>
-          <h3 className="mb-3 text-lg font-semibold">💔 Flop 5 movies</h3>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <BoltIcon className="h-5 w-5 text-rose-500" />
+  Flop 5 movies
+</h3>
           {isLoading && worstMovies.length === 0 ? (
             <LoadingRow />
           ) : worstMovies.length === 0 ? (
@@ -604,7 +641,10 @@ function DiffPill({
 {/* Closest/Farthest to IMDb – media gruppo */}
 <div className="grid gap-4 lg:grid-cols-2">
   <Card>
-    <h3 className="mb-3 text-lg font-semibold">🎯 Closest to IMDb (group avg)</h3>
+    <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <ChartBarIcon className="h-5 w-5" />
+  Closest to IMDb
+</h3>
     {groupImdbCompare.closest.length === 0 ? (
       <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
     ) : (
@@ -629,7 +669,10 @@ function DiffPill({
   </Card>
 
   <Card>
-    <h3 className="mb-3 text-lg font-semibold">⚡ Farthest from IMDb (group avg)</h3>
+    <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <BoltIcon className="h-5 w-5" />
+  Farthest from IMDb
+</h3>
     {groupImdbCompare.farthest.length === 0 ? (
       <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
     ) : (
@@ -657,7 +700,11 @@ function DiffPill({
       {/* --- Pannello per utente --------------------------------- */}
       <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-lg font-semibold">👤 Stats per utente</h3>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+  <UserCircleIcon className="h-5 w-5" />
+  Stats per utente
+</h3>
+
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-500">Select user</span>
             <select className="rounded-lg border bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" value={selectedUser || ""} onChange={(e) => setSelectedUser(e.target.value || null)}>
