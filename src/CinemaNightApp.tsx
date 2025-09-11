@@ -48,16 +48,8 @@ import { Stats } from "./Pages/Stats";
 import { formatScore } from "./Utils/Utils";
 import { HistoryCardExtended } from "./Components/UI/HistoryCardExtended"; 
 import { Profile } from "./Pages/Profile";
-import { ChipAvatar, Avatar, AvatarInline} from "./Components/UI/Avatar"; 
-
-function formatCompact(n: number) {
-  if (n < 1000) return String(n);
-  const units = ["k","M","B","T"];
-  let i = -1;
-  let v = n;
-  do { v /= 1000; i++; } while (v >= 1000 && i < units.length - 1);
-  return `${Math.round(v * 10) / 10}${units[i]}`;
-}
+import { Header } from "./Components/UI/Header"; 
+import { Login } from "./Pages/Login";
 
   
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -103,99 +95,7 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
     </button>
   );
 }
-
-function Header({
-    user,
-    onLogout,
-    tab,
-    setTab,
-    theme,
-    setTheme,
-  }: {
-    user: string;
-    onLogout: () => void;
-    tab: "vote" | "history" | "profile" | "stats";
-    setTab: (t: "vote" | "history" | "profile" | "stats") => void;
-    theme: "light" | "dark";
-    setTheme: (t: "light" | "dark") => void;
-  }) {
-    const tabBtn = (key: "vote" | "history" | "profile" | "stats", label: string) => (
-      <button
-        onClick={() => setTab(key)}
-        className={`rounded-xl border px-3 py-2 
-          ${tab === key ? "bg-black text-white dark:bg-white dark:text-black" : "bg-white dark:bg-zinc-900 dark:text-zinc-100"} 
-          border-gray-200 dark:border-zinc-700`}
-      >
-        {label}
-      </button>
-    );
   
-    return (
-      <div className="flex flex-col gap-2 py-4 md:flex-row md:items-center md:justify-between">
-        <h1 className="text-2xl font-bold">🎞️ Circo Cinema</h1>
-  
-        <div className="flex items-center gap-3">
-          <nav className="flex items-center gap-2">
-            {tabBtn("vote", "Vote")}
-            {tabBtn("history", "History")}
-            {tabBtn("profile", "Profile")}
-            {tabBtn("stats", "Stats")}
-          </nav>
-  
-          <span className="text-sm text-gray-700 dark:text-zinc-300">
-            Hi, <b>{user}</b>
-          </span>
-  
-          <button
-            onClick={onLogout}
-            className="rounded-xl border px-3 py-1 border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-900"
-          >
-            Sign out
-          </button>
-  
-          <button
-            aria-label="Toggle dark mode"
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            title={theme === "dark" ? "Switch to Light" : "Switch to Dark"}
-          >
-            {theme === "dark" ? "🌙 Dark" : "☀️ Light"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-  
-  
-
-function Login({ onLogin }: { onLogin: (name: string) => void }) {
-  const [name, setName] = useState("");
-  return (
-    <div className="mx-auto mt-24 max-w-md">
-      <Card>
-        <h2 className="mb-2 text-xl font-semibold">Enter your name</h2>
-        <p className="mb-4 text-sm text-gray-600 dark:text-zinc-400">
-          If you used this name before, your profile image and picks will be restored.
-        </p>
-        <div className="flex gap-2">
-          <input
-            className="flex-1 rounded-xl border px-3 py-2 border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
-            placeholder="e.g. Talyon"
-            value={name}
-            onChange={(e) => setName(e.target.value.trimStart())}
-          />
-          <button
-            className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-30 dark:bg-white dark:text-black"
-            disabled={!name}
-            onClick={() => onLogin(name)}
-          >
-            Continue
-          </button>
-        </div>
-      </Card>
-    </div>
-  );
-}
 
 // Search + pickers
 function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
