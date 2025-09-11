@@ -401,58 +401,48 @@ React.useEffect(() => {
               return null;
             })()}
 
-// helper: URL ricerca JustWatch (corretto)
-const jwSearchUrl = (title: string, year?: string, country = "it") =>
-  `https://www.justwatch.com/${country}/search?q=${encodeURIComponent(year ? `${title} ${year}` : title)}`;
-
+            {/* Where to watch */}
 {v?.movie?.title && (
   <div className="inline-flex items-center gap-2">
-    {/* Netflix */}
-    <a
-      href={`https://www.netflix.com/search?q=${encodeURIComponent(v.movie.title)}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm dark:border-zinc-700 hover:underline " +
-        (watchProviders.netflix ? "border-red-500/40 text-red-400" : "border-zinc-300 text-current")
-      }
-      title={watchProviders.netflix ? "Disponibile su Netflix" : "Cerca su Netflix"}
-    >
-      <Play className={"h-4 w-4 " + (watchProviders.netflix ? "text-red-500" : "")} />
-      Netflix
-      {!watchProviders.netflix && <span className="ml-1 opacity-70">(search)</span>}
-    </a>
+    {watchProviders.netflix && (
+      <a
+        href={`https://www.netflix.com/search?q=${encodeURIComponent(v.movie.title)}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
+        title="Apri su Netflix"
+      >
+        <Play className="h-4 w-4 text-red-500" />
+        Netflix
+      </a>
+    )}
 
-    {/* Prime Video */}
-    <a
-      href={`https://www.primevideo.com/search?phrase=${encodeURIComponent(v.movie.title)}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm dark:border-zinc-700 hover:underline " +
-        (watchProviders.prime ? "border-sky-500/40 text-sky-400" : "border-zinc-300 text-current")
-      }
-      title={watchProviders.prime ? "Disponibile su Prime Video" : "Cerca su Prime Video"}
-    >
-      <Tv className={"h-4 w-4 " + (watchProviders.prime ? "text-sky-400" : "")} />
-      Prime Video
-      {!watchProviders.prime && <span className="ml-1 opacity-70">(search)</span>}
-    </a>
+    {watchProviders.prime && (
+      <a
+        href={`https://www.primevideo.com/search?phrase=${encodeURIComponent(v.movie.title)}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
+        title="Apri su Prime Video"
+      >
+        <Tv className="h-4 w-4 text-sky-400" />
+        Prime Video
+      </a>
+    )}
 
-    {/* JustWatch: sempre visibile */}
+    {/* Fallback SEMPRE visibile: JustWatch (link diretto se disponibile, altrimenti ricerca) */}
     <a
-      href={watchProviders.jwLink || jwSearchUrl(v.movie.title, releaseYear || undefined)}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
-      title="Dove guardarlo (JustWatch)"
-    >
-      <Play className="h-4 w-4" />
-      Where to watch
-    </a>
+  href={watchProviders.jwLink || jwSearchUrl(v.movie.title, releaseYear || undefined)}
+  target="_blank"
+  rel="noopener noreferrer"
+  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
+  title="Dove guardarlo (JustWatch)"
+>
+  <Play className="h-4 w-4" />
+  Where to watch
+</a>
   </div>
 )}
-
 
           </div>
 
