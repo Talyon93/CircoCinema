@@ -3,7 +3,7 @@ import { Card } from "../Components/UI/Card";
 import { HistoryCardExtended } from "../Components/UI/HistoryCardExtended";
 import { fetchAvatarUrl, uploadAvatar, removeAvatar } from "../AvatarStorage";
 
-type TabKey = "picked" | "rated";
+type TabKey = "picked" | "rated" | "stats";
 
 export function Profile({
   user,
@@ -18,6 +18,7 @@ export function Profile({
   const [loading, setLoading] = React.useState(false);
   const [tab, setTab] = React.useState<TabKey>("picked");
 
+  // ---- Avatar load ----
   React.useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -29,6 +30,7 @@ export function Profile({
     };
   }, [user]);
 
+  // ---- Datasets per tab ----
   const pickedByMe = React.useMemo(
     () => history.filter((h) => h?.picked_by === user),
     [history, user]
@@ -45,6 +47,92 @@ export function Profile({
     [history, user]
   );
 
+  // ---- Dataset e aggregazioni per le MIE stats (solo film dove ho votato) ----
+  const myHistory = React.useMemo(
+    () => history.filter((h) => h?.ratings && h.ratings[user] != null),
+    [history, user]
+  );
+
+  const avgOf = (r?: Record<string, number> | null) => {
+    if (!r) return null;
+    const vals = Object.values(r).map(Number).filter((x) => Number.isFinite(x));
+    if (!vals.length) return null;
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  };
+
+  let minutes = 0;
+  let moviesWithRuntime = 0;
+  let votesGiven = 0;
+  let sumGiven = 0;
+  const scoreList: number[] = [];
+  const genreLikes = new Map<string, number>();
+
+  for (const v of myHistory) {
+    const mine = Number(v?.ratings?.[user]);
+    if (Number.isFinite(mine)) {
+      votesGiven += 1;
+      sumGiven += mine;
+      scoreList.push(mine);
+      if (mine >= 8) {
+        const arr = (v?.movie?.genres || []) as Array<{ name: string }>;
+        arr.forEach((g) => {
+          const name = g?.name?.trim();
+          if (name) genreLikes.set(name, (genreLikes.get(name) || 0) + 1);
+        });
+      }
+    }
+    const rt = Number((v?.movie as any)?.runtime);
+    if (!Number.isNaN(rt) && rt > 0) {
+      minutes += rt;
+      moviesWithRuntime += 1;
+    }
+  }
+
+  const totalMoviesIHaveVoted = myHistory.length;
+  const minutesLabel =
+    moviesWithRuntime > 0 ? `${minutes} min · ${moviesWithRuntime} film` : "—";
+  const avgGiven = votesGiven ? sumGiven / votesGiven : 0;
+
+  // Avg ricevuto quando ho scelto io
+  let receivedSum = 0,
+    receivedN = 0;
+  for (const v of history) {
+    if (v?.picked_by === user) {
+      const a = avgOf(v?.ratings);
+      if (a != null) {
+        receivedSum += a;
+        receivedN += 1;
+      }
+    }
+  }
+  const avgReceived = receivedN ? receivedSum / receivedN : null;
+
+  // Bias vs crowd (mia_voto − media_film)
+  let biasSum = 0,
+    biasN = 0;
+  for (const v of myHistory) {
+    const a = avgOf(v?.ratings);
+    const mine = Number(v?.ratings?.[user]);
+    if (a != null && Number.isFinite(mine)) {
+      biasSum += mine - a;
+      biasN += 1;
+    }
+  }
+  const bias = biasN ? biasSum / biasN : null;
+
+  // Generi preferiti (>=8)
+  const favGenres = Array.from(genreLikes, ([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, 9);
+
+  // ---- UI: Tab selector (pillole con indicatore) ----
+  const tabs: Array<{ key: TabKey; label: string; count: number; icon: React.ReactNode }> = [
+    { key: "picked", label: "Picked", count: pickedByMe.length, icon: <span>🎬</span> },
+    { key: "rated", label: "Rated", count: ratedByMeOnOthers.length, icon: <span>⭐</span> },
+    { key: "stats", label: "Stats", count: myHistory.length, icon: <span>📊</span> },
+  ];
+  const activeIndex = tabs.findIndex((t) => t.key === tab);
+
   function sortByDateDesc(a: any, b: any) {
     const ta = a?.started_at ? new Date(a.started_at).getTime() : 0;
     const tb = b?.started_at ? new Date(b.started_at).getTime() : 0;
@@ -53,39 +141,9 @@ export function Profile({
     return 0;
   }
 
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      setLoading(true);
-      const url = await uploadAvatar(user, file);
-      setAvatarUrl(url);
-      onAvatarSaved?.();
-    } catch (err) {
-      console.error("Avatar upload failed:", err);
-      alert("Upload avatar non riuscito.");
-    } finally {
-      setLoading(false);
-      e.currentTarget.value = "";
-    }
-  }
-
-  async function onClear() {
-    try {
-      setLoading(true);
-      await removeAvatar(user);
-      setAvatarUrl(null);
-      onAvatarSaved?.();
-    } catch (err) {
-      console.error("Remove avatar failed:", err);
-      alert("Rimozione avatar non riuscita.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <>
+      {/* ---------- Header profilo ---------- */}
       <Card>
         <h3 className="mb-3 text-lg font-semibold">👤 Your profile</h3>
 
@@ -119,7 +177,22 @@ export function Profile({
                   type="file"
                   accept="image/*"
                   className="hidden"
-                  onChange={onFile}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      setLoading(true);
+                      const url = await uploadAvatar(user, file);
+                      setAvatarUrl(url);
+                      onAvatarSaved?.();
+                    } catch (err) {
+                      console.error("Avatar upload failed:", err);
+                      alert("Upload avatar non riuscito.");
+                    } finally {
+                      setLoading(false);
+                      e.currentTarget.value = "";
+                    }
+                  }}
                   disabled={loading}
                 />
               </label>
@@ -127,7 +200,19 @@ export function Profile({
               {avatarUrl && (
                 <button
                   className="rounded-xl border px-3 py-2 text-sm dark:border-zinc-700 disabled:opacity-50"
-                  onClick={onClear}
+                  onClick={async () => {
+                    try {
+                      setLoading(true);
+                      await removeAvatar(user);
+                      setAvatarUrl(null);
+                      onAvatarSaved?.();
+                    } catch (err) {
+                      console.error("Remove avatar failed:", err);
+                      alert("Rimozione avatar non riuscita.");
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
                   disabled={loading}
                 >
                   Remove
@@ -138,40 +223,43 @@ export function Profile({
         </div>
       </Card>
 
+      {/* ---------- Tabs + contenuto ---------- */}
       <Card>
-        {/* Tabs */}
-        <div className="mb-4 flex items-center gap-2">
-          <button
-            onClick={() => setTab("picked")}
-            className={`rounded-xl px-3 py-2 text-sm transition ${
-              tab === "picked"
-                ? "bg-zinc-900 text-white dark:bg-zinc-800"
-                : "border border-zinc-300 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
-            }`}
-          >
-            Picked by you
-            <span className="ml-2 rounded-md border px-1.5 py-0.5 text-xs dark:border-zinc-600">
-              {pickedByMe.length}
-            </span>
-          </button>
-
-          <button
-            onClick={() => setTab("rated")}
-            className={`rounded-xl px-3 py-2 text-sm transition ${
-              tab === "rated"
-                ? "bg-zinc-900 text-white dark:bg-zinc-800"
-                : "border border-zinc-300 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
-            }`}
-          >
-            Your ratings on others
-            <span className="ml-2 rounded-md border px-1.5 py-0.5 text-xs dark:border-zinc-600">
-              {ratedByMeOnOthers.length}
-            </span>
-          </button>
+        {/* Selettore tabs */}
+        <div className="mb-4">
+          <div className="relative mx-auto grid w-full max-w-xl grid-cols-3 rounded-2xl border border-zinc-300 bg-white p-1 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+            {/* Indicatore animato */}
+            <div
+              className="absolute top-1 bottom-1 w-[calc(33.333%-0.5rem)] rounded-xl bg-zinc-100 transition-[transform] duration-200 ease-out dark:bg-zinc-800"
+              style={{ transform: `translateX(calc(${activeIndex} * 100% + ${activeIndex * 0.5}rem))` }}
+            />
+            {tabs.map((t) => {
+              const active = t.key === tab;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`relative z-10 flex items-center justify-center gap-2 rounded-xl px-3 py-2 transition ${
+                    active ? "text-white md:text-white dark:text-white" : "text-zinc-700 dark:text-zinc-300"
+                  } ${active ? "font-semibold" : "hover:text-black dark:hover:text-white"}`}
+                >
+                  <span className="opacity-90">{t.icon}</span>
+                  <span>{t.label}</span>
+                  <span
+                    className={`rounded-md border px-1.5 py-0.5 text-[11px] tabular-nums ${
+                      active ? "border-zinc-700/40 bg-zinc-700/40 text-white" : "border-zinc-300 dark:border-zinc-700"
+                    }`}
+                  >
+                    {t.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Content */}
-        {tab === "picked" ? (
+        {/* Contenuto */}
+        {tab === "picked" && (
           <>
             <h3 className="mb-3 text-lg font-semibold">🎬 Movies you picked</h3>
             <div className="grid gap-3">
@@ -187,8 +275,98 @@ export function Profile({
               )}
             </div>
           </>
-        ) : (
+        )}
+
+        {tab === "rated" && (
           <RatedGrid rows={ratedByMeOnOthers.slice().sort(sortByDateDesc)} user={user} />
+        )}
+
+        {tab === "stats" && (
+          <>
+            <h3 className="mb-3 text-lg font-semibold">📊 Your stats</h3>
+
+            {/* KPI personali */}
+            <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <KPI title="TOTAL MOVIES" value={totalMoviesIHaveVoted} />
+              <KPI title="MINUTES WATCHED" value={minutesLabel} />
+              <KPI
+                title="DISTINCT GENRES"
+                value={
+                  new Set(
+                    myHistory
+                      .flatMap((h: any) =>
+                        (h?.movie?.genres || [])
+                          .map((g: any) => g?.name?.trim())
+                          .filter(Boolean)
+                      )
+                  ).size
+                }
+              />
+              <KPI title="TOTAL VOTES" value={votesGiven} />
+            </div>
+
+            {/* Pannello per-utente */}
+            <div className="grid gap-4 lg:grid-cols-[auto_1fr]">
+              {/* Colonna sinistra */}
+              <div className="grid gap-3">
+                <div className="flex flex-col items-center gap-2 rounded-xl border p-4 dark:border-zinc-700">
+                  <div className="grid h-10 w-10 place-items-center rounded-full bg-zinc-800 text-sm font-bold text-white">
+                    {(user?.[0] || "?").toUpperCase()}
+                  </div>
+                  <div className="text-sm font-semibold">{user}</div>
+                  <Donut value={avgGiven || 0} />
+                  <div className="text-xs text-zinc-500">Avg given</div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <SmallKPI label="VOTES GIVEN" value={votesGiven} />
+                  <SmallKPI label="AVG RECEIVED" value={avgReceived != null ? formatScore(avgReceived) : "—"} />
+                </div>
+
+                <div className="rounded-xl border p-3 text-sm dark:border-zinc-700">
+                  <div className="mb-1 text-xs uppercase text-zinc-500">BIAS VS CROWD</div>
+                  <div className="flex items-baseline gap-2">
+                    <div
+                      className={`text-xl font-bold ${
+                        bias != null && bias > 0.05
+                          ? "text-emerald-500"
+                          : bias != null && bias < -0.05
+                          ? "text-rose-500"
+                          : ""
+                      }`}
+                    >
+                      {bias == null ? "—" : `${bias > 0 ? "+" : ""}${formatScore(bias)}`}
+                    </div>
+                    <span className="text-xs text-zinc-500">(user score − movie avg)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Colonna destra */}
+              <div className="grid gap-4">
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className="font-semibold">Score distribution</h4>
+                    <span className="text-xs text-zinc-500">(rounded to 1..10)</span>
+                  </div>
+                  <Histogram values={scoreList} />
+                </div>
+
+                <div>
+                  <h4 className="mb-2 font-semibold">Favourite genres (scores ≥ 8)</h4>
+                  {favGenres.length === 0 ? (
+                    <div className="text-sm text-zinc-500">—</div>
+                  ) : (
+                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                      {favGenres.map((g, i) => (
+                        <BarRow key={g.name + i} label={g.name} value={g.count} max={favGenres[0]?.count || 1} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
         )}
       </Card>
     </>
@@ -240,9 +418,7 @@ function RatedGrid({ rows, user }: { rows: any[]; user: string }) {
               </div>
 
               {/* Titolo */}
-              <div className="mt-2 line-clamp-2 text-center text-sm font-medium">
-                {title}
-              </div>
+              <div className="mt-2 line-clamp-2 text-center text-sm font-medium">{title}</div>
 
               {/* Voto */}
               <div
@@ -260,7 +436,7 @@ function RatedGrid({ rows, user }: { rows: any[]; user: string }) {
   );
 }
 
-/* Poster: risolve TMDB poster_path e fallback */
+/* ---------- Poster helpers ---------- */
 function posterUrlFrom(movie: any): string | null {
   const direct =
     movie?.poster_url || movie?.poster || movie?.posterPath || movie?.posterpath;
@@ -268,7 +444,6 @@ function posterUrlFrom(movie: any): string | null {
 
   const path = movie?.poster_path || movie?.posterPath || movie?.poster; // TMDB
   if (typeof path === "string" && path.length > 0) {
-    // Se è solo il path TMDB, prefissa con una size piccola
     if (path.startsWith("http")) return path;
     const clean = path.startsWith("/") ? path : `/${path}`;
     return `https://image.tmdb.org/t/p/w92${clean}`;
@@ -276,43 +451,110 @@ function posterUrlFrom(movie: any): string | null {
   return null;
 }
 
-function PosterThumb({ url, title }: { url: string | null; title: string }) {
-  const [ok, setOk] = React.useState(Boolean(url));
-  return ok && url ? (
-    <img
-      src={url}
-      alt={title}
-      className="h-14 w-10 rounded-md object-cover bg-zinc-800"
-      onError={() => setOk(false)}
-    />
-  ) : (
-    <div
-      className="grid h-14 w-10 place-items-center rounded-md bg-zinc-800 text-[10px] text-zinc-300"
-      title={title}
-      aria-label={title}
-    >
-      —
+/* ---------- UI helpers ---------- */
+function KPI({ title, value }: { title: string; value: React.ReactNode }) {
+  return (
+    <Card className="relative overflow-hidden">
+      <div className="text-xs uppercase text-zinc-500">{title}</div>
+      <div className="text-3xl font-extrabold tracking-tight">{value}</div>
+      <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-gradient-to-br from-indigo-500/20 to-emerald-500/20" />
+    </Card>
+  );
+}
+
+function SmallKPI({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border p-3 text-sm dark:border-zinc-700">
+      <div className="text-xs uppercase text-zinc-500">{label}</div>
+      <div className="text-xl font-bold">{value}</div>
     </div>
   );
 }
 
-/* ---------- helpers ---------- */
+function Donut({ value, size = 96 }: { value: number; size?: number }) {
+  const clamped = Math.max(1, Math.min(10, value || 1));
+  const pct = (clamped - 1) / 9; // 1..10 -> 0..1
+  const stroke = 10;
+  const r = (size - stroke) / 2;
+  const c = Math.PI * 2 * r;
+  const dash = c * pct;
+  const hue = 20 + pct * 100; // 20→120
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="block">
+      <g transform={`translate(${size / 2}, ${size / 2})`}>
+        <circle
+          r={r}
+          cx={0}
+          cy={0}
+          stroke="currentColor"
+          className="text-zinc-300 dark:text-zinc-800"
+          strokeWidth={stroke}
+          fill="none"
+        />
+        <circle
+          r={r}
+          cx={0}
+          cy={0}
+          stroke={`hsl(${hue} 80% 50%)`}
+          strokeWidth={stroke}
+          fill="none"
+          strokeDasharray={`${dash} ${c - dash}`}
+          transform="rotate(-90)"
+          strokeLinecap="round"
+        />
+        <text x={0} y={6} textAnchor="middle" className="fill-current text-xl font-bold tabular-nums">
+          {formatScore(clamped)}
+        </text>
+      </g>
+    </svg>
+  );
+}
+
+function Histogram({ values }: { values: number[] }) {
+  const buckets = Array.from({ length: 10 }, (_, i) => i + 1);
+  const counts = buckets.map((b) => values.filter((v) => Math.round(v) === b).length);
+  const max = Math.max(1, ...counts);
+  return (
+    <div className="grid grid-cols-10 items-end gap-1">
+      {counts.map((c, i) => (
+        <div key={i} className="flex flex-col items-center gap-1">
+          <div
+            className="w-full rounded-md bg-gradient-to-t from-zinc-300 to-zinc-100 dark:from-zinc-800 dark:to-zinc-700"
+            style={{ height: `${(c / max) * 72 + 4}px` }}
+          />
+          <span className="text-[10px] text-zinc-500">{i + 1}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BarRow({ label, value, max }: { label: string; value: number; max: number }) {
+  const pct = max ? Math.round((value / max) * 100) : 0;
+  return (
+    <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+      <div>
+        <div className="mb-1 flex items-center justify-between text-sm">
+          <span className="truncate">{label}</span>
+          <span className="text-xs tabular-nums">{value}</span>
+        </div>
+        <div className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-800">
+          <div
+            className="h-2 rounded-full bg-gradient-to-r from-sky-500 to-indigo-500"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function scoreHue(n: number) {
   const s = Math.max(1, Math.min(10, Number(n) || 1));
   const t = (s - 4) / 6; // 4→0°, 10→120°
   return Math.max(0, Math.min(120, Math.round(t * 120)));
 }
 
-function formatDateTime(iso: string) {
-  try {
-    const d = new Date(iso);
-    const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const yyyy = d.getFullYear();
-    const hh = String(d.getHours()).padStart(2, "0");
-    const min = String(d.getMinutes()).padStart(2, "0");
-    return `${dd}/${mm}/${yyyy}, ${hh}:${min}`;
-  } catch {
-    return "";
-  }
+function formatScore(n: number) {
+  return (Math.round(n * 100) / 100).toFixed(n % 1 === 0 ? 0 : 1);
 }
