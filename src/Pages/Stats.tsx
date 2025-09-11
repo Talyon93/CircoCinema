@@ -243,21 +243,36 @@ const groupImdbCompare = React.useMemo(() => {
   }
 
   function BarRow({ label, value, max }: { label: string; value: number; max: number }) {
-    const pct = max ? Math.round((value / max) * 100) : 0;
-    return (
-      <div className="grid grid-cols-[1fr_auto] items-center gap-3">
-        <div>
-          <div className="mb-1 flex items-center justify-between text-sm">
-            <span className="truncate">{label}</span>
-            <span className="text-xs tabular-nums">{value}</span>
-          </div>
-          <div className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-800">
-            <div className="h-2 rounded-full bg-gradient-to-r from-sky-500 to-indigo-500" style={{ width: `${pct}%` }} />
-          </div>
+  const pct = max ? Math.round((value / max) * 100) : 0;
+
+  // palette ciclica
+  const colors = [
+    "from-sky-500 to-indigo-500",
+    "from-emerald-500 to-teal-400",
+    "from-rose-500 to-pink-400",
+    "from-amber-400 to-yellow-300",
+    "from-purple-500 to-fuchsia-400",
+  ];
+  const color = colors[label.charCodeAt(0) % colors.length];
+
+  return (
+    <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+      <div>
+        <div className="mb-1 flex items-center justify-between text-sm">
+          <span className="truncate">{label}</span>
+          <span className="text-xs tabular-nums">{value}</span>
+        </div>
+        <div className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-800">
+          <div
+            className={`h-2 rounded-full bg-gradient-to-r ${color}`}
+            style={{ width: `${pct}%` }}
+          />
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
 
   function Donut({ value, size=96 }: { value: number; size?: number }) {
     const clamped = Math.max(1, Math.min(10, value));
@@ -344,21 +359,78 @@ const groupImdbCompare = React.useMemo(() => {
     );
   }
 
-  function Histogram({ values }: { values: number[] }) {
-    const buckets = Array.from({ length: 10 }, (_, i) => i + 1);
-    const counts = buckets.map((b) => values.filter((v) => Math.round(v) === b).length);
-    const max = Math.max(1, ...counts);
-    return (
-      <div className="grid grid-cols-10 items-end gap-1">
-        {counts.map((c, i) => (
-          <div key={i} className="flex flex-col items-center gap-1">
-            <div className="w-full rounded-md bg-gradient-to-t from-zinc-300 to-zinc-100 dark:from-zinc-800 dark:to-zinc-700" style={{ height: `${(c / max) * 72 + 4}px` }} />
-            <span className="text-[10px] text-zinc-500">{i + 1}</span>
-          </div>
+function Histogram({ values }: { values: number[] }) {
+  const buckets = Array.from({ length: 10 }, (_, i) => i + 1);
+  const counts = buckets.map((b) => values.filter((v) => Math.round(v) === b).length);
+  const max = Math.max(1, ...counts);
+
+  // colori per fascia voto
+  function colorForBucket(b: number) {
+    if (b <= 3) return { bar: "from-rose-500 to-rose-400", dot: "bg-rose-500" };
+    if (b <= 6) return { bar: "from-amber-400 to-yellow-300", dot: "bg-amber-400" };
+    return { bar: "from-emerald-500 to-green-400", dot: "bg-emerald-500" };
+  }
+
+  const H = 90;            // altezza totale area barre
+  const barMaxH = 68;      // altezza utile barra
+  const gridY = [0.5];     // una tacca al 50% (puoi aggiungere 0.25, 0.75…)
+
+  return (
+    <div className="relative">
+      {/* griglia orizzontale leggera */}
+      <div className="absolute inset-x-0 top-0 h-[90px]">
+        {gridY.map((g, idx) => (
+          <div
+            key={idx}
+            className="absolute inset-x-0 border-t border-dashed border-zinc-700/40"
+            style={{ top: `${(1 - g) * H}px` }}
+          />
         ))}
       </div>
-    );
-  }
+
+      <div className="relative grid grid-cols-10 items-end gap-6">
+        {counts.map((c, i) => {
+          const { bar, dot } = colorForBucket(i + 1);
+          const h = (c / max) * barMaxH + (c > 0 ? 6 : 2); // min visivo
+          return (
+            <div key={i} className="flex flex-col items-center">
+              {/* barra */}
+              <div
+                className={`w-10 rounded-lg bg-gradient-to-t shadow-sm ${bar}`}
+                style={{ height: `${h}px` }}
+                title={`${c} vote${c !== 1 ? "s" : ""} on ${i + 1}`}
+                aria-label={`${c} votes on ${i + 1}`}
+              />
+
+              {/* numero ben visibile sotto la barra */}
+              <div className="mt-1 flex items-center gap-1 text-xs tabular-nums">
+                <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
+                <span className="font-semibold text-zinc-100">{c}</span>
+              </div>
+
+              {/* etichetta asse X */}
+              <span className="text-[10px] text-zinc-400">{i + 1}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* legenda colori (basso/medio/alto) */}
+      <div className="mt-2 flex items-center gap-4 text-[11px] text-zinc-400">
+        <span className="flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full bg-rose-500" /> 1–3
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full bg-amber-400" /> 4–6
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full bg-emerald-500" /> 7–10
+        </span>
+      </div>
+    </div>
+  );
+}
+
 
 type DiffVariant = "closest" | "farthest";
 

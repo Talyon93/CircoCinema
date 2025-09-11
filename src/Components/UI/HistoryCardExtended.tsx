@@ -9,7 +9,7 @@ import {
   ensureGenres,
   getPosterUrl,
 } from "../../TMDBHelper";
-import { Calendar, Timer, Film, Star, Trophy } from "lucide-react";
+import { Calendar, Timer, Film, Star, Trophy, Play, Tv } from "lucide-react";
 
 // LocalStorage helpers + costanti chiave
 import { getMetaCache, setMetaCache } from "../../localStorage";
@@ -122,8 +122,110 @@ export function HistoryCardExtended({
   }, [v?.movie?.title, meta?.poster_path, meta?.overview]);
   // -----------------------------------------------
 
+  const jwSearchUrl = (title: string, year?: string, country = "it") =>
+    `https://www.justwatch.com/${country}/search?q=${encodeURIComponent(
+      year ? `${title} ${year}` : title
+    )}`;
+
   const poster = meta?.poster_path ? getPosterUrl(meta.poster_path, "w342") : "";
   const overview = (meta?.overview || "").trim();
+
+  // --- Streaming providers (TMDB watch/providers) ---
+const [watchProviders, setWatchProviders] = React.useState<{
+  netflix: boolean;   // confermato disponibile
+  prime: boolean;     // confermato disponibile
+  jwLink?: string;    // deep link di TMDB a JustWatch
+}>({ netflix: false, prime: false, jwLink: undefined });
+
+React.useEffect(() => {
+  const apiKey = (import.meta as any)?.env?.VITE_TMDB_API_KEY;
+  const tmdbId = (v?.movie?.tmdb_id || v?.movie?.id) as number | undefined;
+  const mediaType = v?.movie?.media_type === "tv" ? "tv" : "movie";
+  if (!tmdbId || !apiKey) {
+    // fallback solo con euristiche
+    const producedBy = (v?.movie?.production_companies || []).map((c: any) => String(c?.name || "").toLowerCase());
+    const homepage = String(v?.movie?.homepage || "").toLowerCase();
+    const heuristicNetflix = producedBy.includes("netflix") || homepage.includes("netflix.com");
+    setWatchProviders((p) => ({ ...p, netflix: heuristicNetflix }));
+    return;
+  }
+
+  const region = "IT";
+  (async () => {
+    try {
+      const url = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}/watch/providers?api_key=${apiKey}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("providers fetch failed");
+      const data = await res.json();
+      const r = data?.results?.[region] || data?.results?.US;
+
+      const arrs = [
+        ...(Array.isArray(r?.flatrate) ? r.flatrate : []),
+        ...(Array.isArray(r?.buy) ? r.buy : []),
+        ...(Array.isArray(r?.rent) ? r.rent : []),
+        ...(Array.isArray(r?.ads) ? r.ads : []),
+      ];
+
+      const hasProvider = (id: number) => arrs.some((p: any) => Number(p?.provider_id) === id);
+
+      // TMDB provider ids
+      const NETFLIX_ID = 8;
+      const PRIME_ID = 9;
+
+      let netflix = hasProvider(NETFLIX_ID);
+      let prime = hasProvider(PRIME_ID);
+
+      // euristica extra se TMDB non ha dati regionali
+      if (!netflix) {
+        const producedBy = (v?.movie?.production_companies || []).map((c: any) => String(c?.name || "").toLowerCase());
+        const homepage = String(v?.movie?.homepage || "").toLowerCase();
+        netflix = producedBy.includes("netflix") || homepage.includes("netflix.com");
+      }
+
+      const jwLink = typeof r?.link === "string" ? r.link : undefined;
+      setWatchProviders({ netflix, prime, jwLink });
+    } catch {
+      // solo euristiche
+      const producedBy = (v?.movie?.production_companies || []).map((c: any) => String(c?.name || "").toLowerCase());
+      const homepage = String(v?.movie?.homepage || "").toLowerCase();
+      const heuristicNetflix = producedBy.includes("netflix") || homepage.includes("netflix.com");
+      setWatchProviders((p) => ({ ...p, netflix: heuristicNetflix }));
+    }
+  })();
+}, [v?.movie?.tmdb_id, v?.movie?.id, v?.movie?.media_type]);
+
+
+  React.useEffect(() => {
+    const tmdbId = (v?.movie?.tmdb_id || v?.movie?.id) as number | undefined;
+    const apiKey = (import.meta as any)?.env?.VITE_TMDB_API_KEY;
+    if (!tmdbId || !apiKey) return;
+
+    const region = "IT"; // default Italia, fallback US
+    (async () => {
+      try {
+        const url = `https://api.themoviedb.org/3/movie/${tmdbId}/watch/providers?api_key=${apiKey}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        const r = data?.results?.[region] || data?.results?.US;
+
+        const flatrate: any[] = Array.isArray(r?.flatrate) ? r.flatrate : [];
+        const buy: any[] = Array.isArray(r?.buy) ? r.buy : [];
+        const rent: any[] = Array.isArray(r?.rent) ? r.rent : [];
+
+        // TMDB provider_id: Netflix=8, Prime Video=9
+        const has = (arr: any[], id: number) => arr?.some((p) => Number(p?.provider_id) === id);
+
+        const netflix = has(flatrate, 8) || has(buy, 8) || has(rent, 8);
+        const prime = has(flatrate, 9) || has(buy, 9) || has(rent, 9);
+        const jwLink = typeof r?.link === "string" ? r.link : undefined;
+
+        setWatchProviders({ netflix, prime, jwLink });
+      } catch {
+        // noop
+      }
+    })();
+  }, [v?.movie?.tmdb_id, v?.movie?.id]);
 
   // --- UI helpers (ring & bar) ---
   const AvgRing = ({ value }: { value: number }) => {
@@ -155,14 +257,17 @@ export function HistoryCardExtended({
   const showRank = typeof rank === "number" && typeof total === "number" && total > 0;
 
   const RankBadge = ({ pos, tot }: { pos: number; tot: number }) => (
-  <span
-    className="ml-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-gray-700 dark:text-zinc-300 dark:border-zinc-700"
-    title="Posizione in classifica (media voti)"
-  >
-    <Trophy className="h-4 w-4 text-amber-400" />
-    <span>#{pos}/{tot}</span>
-  </span>
-);
+    <span
+      className="ml-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-gray-700 dark:text-zinc-300 dark:border-zinc-700"
+      title="Posizione in classifica (media voti)"
+    >
+      <Trophy className="h-4 w-4 text-amber-400" />
+      <span>
+        #{pos}/{tot}
+      </span>
+    </span>
+  );
+
   return (
     <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
       {/* Header */}
@@ -213,6 +318,7 @@ export function HistoryCardExtended({
         </div>
 
         <div className="min-w-0">
+          {/* META */}
           <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
             {releaseYear && (
               <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
@@ -294,6 +400,60 @@ export function HistoryCardExtended({
 
               return null;
             })()}
+
+// helper: URL ricerca JustWatch (corretto)
+const jwSearchUrl = (title: string, year?: string, country = "it") =>
+  `https://www.justwatch.com/${country}/search?q=${encodeURIComponent(year ? `${title} ${year}` : title)}`;
+
+{v?.movie?.title && (
+  <div className="inline-flex items-center gap-2">
+    {/* Netflix */}
+    <a
+      href={`https://www.netflix.com/search?q=${encodeURIComponent(v.movie.title)}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm dark:border-zinc-700 hover:underline " +
+        (watchProviders.netflix ? "border-red-500/40 text-red-400" : "border-zinc-300 text-current")
+      }
+      title={watchProviders.netflix ? "Disponibile su Netflix" : "Cerca su Netflix"}
+    >
+      <Play className={"h-4 w-4 " + (watchProviders.netflix ? "text-red-500" : "")} />
+      Netflix
+      {!watchProviders.netflix && <span className="ml-1 opacity-70">(search)</span>}
+    </a>
+
+    {/* Prime Video */}
+    <a
+      href={`https://www.primevideo.com/search?phrase=${encodeURIComponent(v.movie.title)}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm dark:border-zinc-700 hover:underline " +
+        (watchProviders.prime ? "border-sky-500/40 text-sky-400" : "border-zinc-300 text-current")
+      }
+      title={watchProviders.prime ? "Disponibile su Prime Video" : "Cerca su Prime Video"}
+    >
+      <Tv className={"h-4 w-4 " + (watchProviders.prime ? "text-sky-400" : "")} />
+      Prime Video
+      {!watchProviders.prime && <span className="ml-1 opacity-70">(search)</span>}
+    </a>
+
+    {/* JustWatch: sempre visibile */}
+    <a
+      href={watchProviders.jwLink || jwSearchUrl(v.movie.title, releaseYear || undefined)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
+      title="Dove guardarlo (JustWatch)"
+    >
+      <Play className="h-4 w-4" />
+      Where to watch
+    </a>
+  </div>
+)}
+
+
           </div>
 
           <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
