@@ -1,11 +1,18 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { tmdbDetails, tmdbSearch, omdbRatingFromImdbId, mergeMovie, fetchMetaForTitle, ensureRuntime, ensureGenres, getPosterUrl } from "../../TMDBHelper";
+import React from "react";
+import {
+  tmdbDetails,
+  tmdbSearch,
+  omdbRatingFromImdbId,
+  mergeMovie,
+  fetchMetaForTitle,
+  ensureRuntime,
+  ensureGenres,
+  getPosterUrl,
+} from "../../TMDBHelper";
+import { Calendar, Timer, Film, Star, Trophy } from "lucide-react";
 
 // LocalStorage helpers + costanti chiave
-import {
-  getMetaCache,
-  setMetaCache,
-} from "../../localStorage";
+import { getMetaCache, setMetaCache } from "../../localStorage";
 
 import { ScoreDonut } from "./ScoreDonut";
 import { VotesBar } from "./VotesBar";
@@ -24,8 +31,8 @@ export function HistoryCardExtended({
   v: any;
   onEdit?: (id: any) => void;
   onMetaResolved?: (viewingId: any, nextMovie: any) => void;
-  rank?: number;   // posizione 1-based
-  total?: number;  // numero totale film in classifica
+  rank?: number; // posizione 1-based
+  total?: number; // numero totale film in classifica
 }) {
   const ratings = (v.ratings || {}) as Record<string, number>;
   const entries = Object.entries(ratings) as [string, number][];
@@ -56,7 +63,7 @@ export function HistoryCardExtended({
   const tryPersist = (cand: { poster_path?: string; overview?: string }) => {
     if (persistOnceRef.current) return;
     const needPoster = !v?.movie?.poster_path && cand.poster_path;
-    const needOverview = !v?.movie?.overview && (cand.overview && cand.overview.trim());
+    const needOverview = !v?.movie?.overview && cand.overview && cand.overview.trim();
     if (needPoster || needOverview) {
       persistOnceRef.current = true;
       const nextMovie = { ...v.movie, ...cand };
@@ -120,7 +127,9 @@ export function HistoryCardExtended({
 
   // --- UI helpers (ring & bar) ---
   const AvgRing = ({ value }: { value: number }) => {
-    const r = 26, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
+    const r = 26,
+      c = 2 * Math.PI * r,
+      pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
     return (
       <div className="relative h-16 w-16">
         <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
@@ -146,15 +155,14 @@ export function HistoryCardExtended({
   const showRank = typeof rank === "number" && typeof total === "number" && total > 0;
 
   const RankBadge = ({ pos, tot }: { pos: number; tot: number }) => (
-    <span
-      className="ml-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-gray-700 dark:text-zinc-300 dark:border-zinc-700"
-      title="Posizione in classifica (media voti)"
-    >
-      <span>🏆</span>
-      <span>#{pos}/{tot}</span>
-    </span>
-  );
-
+  <span
+    className="ml-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-gray-700 dark:text-zinc-300 dark:border-zinc-700"
+    title="Posizione in classifica (media voti)"
+  >
+    <Trophy className="h-4 w-4 text-amber-400" />
+    <span>#{pos}/{tot}</span>
+  </span>
+);
   return (
     <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
       {/* Header */}
@@ -206,39 +214,80 @@ export function HistoryCardExtended({
 
         <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
-            {releaseYear && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">📅 {releaseYear}</span>}
-            {Number(v?.movie?.runtime) > 0 && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {v.movie.runtime} min</span>}
-            {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
+            {releaseYear && (
+              <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+                <Calendar className="h-4 w-4 text-blue-400" />
+                {releaseYear}
+              </span>
+            )}
+
+            {Number(v?.movie?.runtime) > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+                <Timer className="h-4 w-4 text-pink-400" />
+                {v.movie.runtime} min
+              </span>
+            )}
+
+            {genreLine && (
+              <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+                <Film className="h-4 w-4 text-green-400" />
+                {genreLine}
+              </span>
+            )}
+
+            {/* Rating + votes (un unico badge) */}
             {(() => {
               const imdbId = v?.movie?.imdb_id as string | undefined;
-              const imdbAvg = typeof v?.movie?.imdb_rating === "number" ? v.movie.imdb_rating : null;
-              const imdbVotes = typeof v?.movie?.imdb_votes === "number" ? v.movie.imdb_votes : null;
 
-              if (imdbId && (imdbAvg != null || imdbVotes != null)) {
-                return (
+              if (typeof v?.movie?.imdb_rating === "number") {
+                const votes =
+                  typeof v?.movie?.imdb_votes === "number" && v.movie.imdb_votes > 0
+                    ? v.movie.imdb_votes
+                    : null;
+
+                const content = (
+                  <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 underline-offset-2">
+                    <Star className="h-4 w-4 text-yellow-400" fill="currentColor" stroke="none" />
+                    IMDb {formatScore(v.movie.imdb_rating)}
+                    {votes ? (
+                      <span className="ml-1 text-gray-500 dark:text-zinc-400">
+                        • {votes.toLocaleString()} votes
+                      </span>
+                    ) : null}
+                  </span>
+                );
+
+                // Se abbiamo l'ID IMDb, rendiamo tutto il badge cliccabile
+                return imdbId ? (
                   <a
                     href={`https://www.imdb.com/title/${imdbId}/`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="rounded-full border px-2 py-0.5 dark:border-zinc-700 underline-offset-2 hover:underline"
                     title="Open on IMDb"
+                    className="no-underline hover:underline"
                   >
-                    ★ IMDb{imdbAvg != null ? ` ${formatScore(imdbAvg)}` : ""}{imdbAvg != null && imdbVotes != null ? " • " : ""}
-                    {imdbVotes != null ? `${imdbVotes.toLocaleString()} votes` : ""}
+                    {content}
                   </a>
+                ) : (
+                  content
                 );
               }
 
-              // Fallback su TMDB se non abbiamo IMDb
               if (typeof v?.movie?.tmdb_vote_average === "number") {
-                const tmdbVotes =
+                const votes =
                   typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0
                     ? v.movie.tmdb_vote_count
                     : null;
+
                 return (
-                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                    ★ TMDB {formatScore(v.movie.tmdb_vote_average)}
-                    {tmdbVotes ? ` • ${tmdbVotes.toLocaleString()} votes` : ""}
+                  <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+                    <Star className="h-4 w-4 text-sky-400" fill="currentColor" stroke="none" />
+                    TMDB {formatScore(v.movie.tmdb_vote_average)}
+                    {votes ? (
+                      <span className="ml-1 text-gray-500 dark:text-zinc-400">
+                        • {votes.toLocaleString()} votes
+                      </span>
+                    ) : null}
                   </span>
                 );
               }
@@ -257,6 +306,7 @@ export function HistoryCardExtended({
               <VotesBar entries={entries} avg={avg} />
             </div>
           </div>
+
           {entries.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {Object.entries(ratings)

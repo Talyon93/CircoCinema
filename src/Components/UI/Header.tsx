@@ -128,18 +128,38 @@ export function Header({
           <TabBtn k="stats" label="Stats" />
         </nav>
 
-        {/* RIGHT: avatar menu */}
+        {/* RIGHT: riquadro icona + nome (trigger del menu) */}
         <div className="justify-self-end flex items-center gap-2">
           <div className="relative" ref={menuRef}>
             <button
               onClick={() => setOpen((s) => !s)}
-              className="flex items-center justify-center"
+              className={[
+                "group flex items-center gap-2 rounded-2xl",
+                "border border-zinc-200 bg-white px-2.5 py-1.5 shadow-sm",
+                "hover:bg-zinc-50 active:scale-[0.99]",
+                "dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70",
+              ].join(" ")}
               aria-haspopup="menu"
               aria-expanded={open}
               aria-label="Open profile menu"
               title={user}
             >
-              <Avatar name={user} size={36} />
+              <Avatar name={user} size={28} />
+              <span className="max-w-[140px] truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">
+                {user}
+              </span>
+              <svg
+                className="h-4 w-4 opacity-70 group-hover:opacity-100"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"
+                  clipRule="evenodd"
+                />
+              </svg>
             </button>
 
             {open && (
@@ -153,24 +173,6 @@ export function Header({
                     {user}
                   </span>
                 </div>
-
-                {/* Theme toggle inside menu */}
-                <div className="flex items-center justify-between px-3 py-2">
-                  <span className="text-sm text-zinc-700 dark:text-zinc-300">
-                    Theme
-                  </span>
-                  <button
-                    onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                    className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-sm hover:bg-zinc-50 active:scale-[0.99] dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-800/70"
-                    title={theme === "dark" ? "Switch to Light" : "Switch to Dark"}
-                  >
-                    <span aria-hidden>{theme === "dark" ? "🌙" : "☀️"}</span>
-                    <span className="min-w-[3.5rem] text-zinc-800 dark:text-zinc-100">
-                      {theme === "dark" ? "Dark" : "Light"}
-                    </span>
-                  </button>
-                </div>
-
                 <div className="my-1 h-px bg-zinc-200 dark:bg-zinc-700" />
 
                 <button
@@ -203,7 +205,7 @@ export function Header({
         </div>
       </div>
 
-      {/* Mobile: badge sopra, tabs sotto (già centrate) */}
+      {/* Mobile: badge sopra, tabs sotto; il riquadro icona+nome resta uguale */}
       <div className="mx-auto block max-w-6xl px-3 pb-3 md:hidden">
         <div className="mb-2 flex">
           <NowShowingBadge />

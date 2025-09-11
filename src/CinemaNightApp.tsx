@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { Calendar, Timer } from "lucide-react";
 
 // TMDB helpers
 import {
@@ -405,8 +406,18 @@ function ViewingModal({
 
           <div className="min-w-0">
             <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-              {year && <span className="rounded-full border border-zinc-700 px-2 py-0.5">📅 {year}</span>}
-              {runtime && <span className="rounded-full border border-zinc-700 px-2 py-0.5">⏱ {runtime} min</span>}
+              {year && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2 py-0.5 text-sm">
+                  <Calendar className="h-4 w-4 text-blue-400" />
+                  {year}
+                </span>
+              )}
+              {runtime && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2 py-0.5 text-sm">
+                  <Timer className="h-4 w-4 text-pink-400" />
+                  {runtime} min
+                </span>
+              )}
               {genreLine && <span className="rounded-full border border-zinc-700 px-2 py-0.5">{genreLine}</span>}
               {(() => {
                 const imdbId = v?.movie?.imdb_id as string | undefined;
