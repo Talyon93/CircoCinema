@@ -2,6 +2,9 @@ import React from "react";
 import { Card } from "../Components/UI/Card";
 import { formatScore } from "../Utils/Utils";
 import { AvatarInline } from "../Components/UI/Avatar";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from "recharts";
 import { PickedByBadge } from "../Components/UI/PickedByBadge";
 import {
   ChartBarIcon,
@@ -14,6 +17,7 @@ import {
   UserCircleIcon,
   BoltIcon,
 } from "@heroicons/react/24/outline";
+
 // =============================================================
 // Stats potenziato con grafici, badge e confronto IMDb
 // =============================================================
@@ -60,7 +64,7 @@ export function Stats({
   let totalMinutes = 0;
   let totalMinutesKnown = 0;
   const movieStats: Array<{ id: any; title: string; avg: number; votes: number; date: number; picked_by?: string }>=[];
-  const timeline: Array<{ t: number; avg: number }>=[];
+  const timeline: Array<{ t: number; avg: number; title?: string; label?: string }>=[];
 
   for (const v of history) {
     const ratings = (v?.ratings || {}) as Record<string, number>;
@@ -110,7 +114,7 @@ export function Stats({
       totalMinutesKnown += 1;
     }
 
-    // statistiche film + timeline
+    // statistiche film + timeline (arricchita con title/label per tooltip)
     if (avg != null) {
       movieStats.push({
         id: v.id,
@@ -120,7 +124,16 @@ export function Stats({
         date: v?.started_at ? new Date(v.started_at).getTime() : 0,
         picked_by: v?.picked_by,
       });
-      if (v?.started_at) timeline.push({ t: new Date(v.started_at).getTime(), avg });
+
+      if (v?.started_at) {
+        const t = new Date(v.started_at).getTime();
+        timeline.push({
+          t,
+          avg,
+          title: v?.movie?.title || "Untitled",
+          label: new Date(t).toLocaleDateString(),
+        });
+      }
     }
   }
 
@@ -188,7 +201,10 @@ export function Stats({
   }, [selectedUser, history]);
 
   // Timeline ordinata per grafico
-  const timelineSorted = React.useMemo(() => timeline.slice().sort((a, b) => a.t - b.t), [history.length]);
+  const timelineSorted = React.useMemo(
+    () => timeline.slice().sort((a, b) => a.t - b.t),
+    [history.length]
+  );
 
   // Confronto selezionato vs IMDb
   const userImdbCompare = React.useMemo(() => {
@@ -205,26 +221,25 @@ export function Stats({
     return { closest: byClosest, farthest: byFarthest };
   }, [selectedUser, history]);
 
-
   // Confronto media gruppo vs IMDb (per film)
-const groupImdbCompare = React.useMemo(() => {
-  const rows: Array<{ id:any; title:string; avg:number; ref:number; diff:number }> = [];
-  for (const v of history) {
-    const avg = avgOf(v?.ratings);
-    const ref = refScoreFor(v);
-    if (avg == null || ref == null) continue;
-    rows.push({
-      id: v.id,
-      title: v?.movie?.title || "Untitled",
-      avg,
-      ref,
-      diff: Math.abs(avg - ref),
-    });
-  }
-  const closest = rows.slice().sort((a,b)=> a.diff - b.diff).slice(0,5);
-  const farthest = rows.slice().sort((a,b)=> b.diff - a.diff).slice(0,5);
-  return { closest, farthest };
-}, [history.length]);
+  const groupImdbCompare = React.useMemo(() => {
+    const rows: Array<{ id:any; title:string; avg:number; ref:number; diff:number }> = [];
+    for (const v of history) {
+      const avg = avgOf(v?.ratings);
+      const ref = refScoreFor(v);
+      if (avg == null || ref == null) continue;
+      rows.push({
+        id: v.id,
+        title: v?.movie?.title || "Untitled",
+        avg,
+        ref,
+        diff: Math.abs(avg - ref),
+      });
+    }
+    const closest = rows.slice().sort((a,b)=> a.diff - b.diff).slice(0,5);
+    const farthest = rows.slice().sort((a,b)=> b.diff - a.diff).slice(0,5);
+    return { closest, farthest };
+  }, [history.length]);
 
   // ===================== Componenti visuali =====================
   const LoadingRow = () => (
@@ -243,36 +258,35 @@ const groupImdbCompare = React.useMemo(() => {
   }
 
   function BarRow({ label, value, max }: { label: string; value: number; max: number }) {
-  const pct = max ? Math.round((value / max) * 100) : 0;
+    const pct = max ? Math.round((value / max) * 100) : 0;
 
-  // palette ciclica
-  const colors = [
-    "from-sky-500 to-indigo-500",
-    "from-emerald-500 to-teal-400",
-    "from-rose-500 to-pink-400",
-    "from-amber-400 to-yellow-300",
-    "from-purple-500 to-fuchsia-400",
-  ];
-  const color = colors[label.charCodeAt(0) % colors.length];
+    // palette ciclica
+    const colors = [
+      "from-sky-500 to-indigo-500",
+      "from-emerald-500 to-teal-400",
+      "from-rose-500 to-pink-400",
+      "from-amber-400 to-yellow-300",
+      "from-purple-500 to-fuchsia-400",
+    ];
+    const color = colors[label.charCodeAt(0) % colors.length];
 
-  return (
-    <div className="grid grid-cols-[1fr_auto] items-center gap-3">
-      <div>
-        <div className="mb-1 flex items-center justify-between text-sm">
-          <span className="truncate">{label}</span>
-          <span className="text-xs tabular-nums">{value}</span>
-        </div>
-        <div className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-800">
-          <div
-            className={`h-2 rounded-full bg-gradient-to-r ${color}`}
-            style={{ width: `${pct}%` }}
-          />
+    return (
+      <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+        <div>
+          <div className="mb-1 flex items-center justify-between text-sm">
+            <span className="truncate">{label}</span>
+            <span className="text-xs tabular-nums">{value}</span>
+          </div>
+          <div className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-800">
+            <div
+              className={`h-2 rounded-full bg-gradient-to-r ${color}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
-
+    );
+  }
 
   function Donut({ value, size=96 }: { value: number; size?: number }) {
     const clamped = Math.max(1, Math.min(10, value));
@@ -295,191 +309,247 @@ const groupImdbCompare = React.useMemo(() => {
     );
   }
 
-  function Sparkline({ data, height = 120, padding = 12 }: { data: Array<{ t: number; avg: number }>; height?: number; padding?: number }) {
-    const containerRef = React.useRef<HTMLDivElement>(null);
-    const [width, setWidth] = React.useState(420);
-    const gid = (React as any).useId ? (React as any).useId() : "sg";
+ // Sparkline con tooltip custom affidabile
+function Sparkline({
+  data,
+  height = 120,
+  padding = 12,
+}: {
+  data: Array<{ t: number; avg: number; title?: string; label?: string }>;
+  height?: number;
+  padding?: number;
+}) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [width, setWidth] = React.useState(420);
+  const [hover, setHover] = React.useState<
+    null | { x: number; y: number; title?: string; label?: string; avg: number; boxX: number; boxY: number }
+  >(null);
+  const gid = (React as any).useId ? (React as any).useId() : "sg";
 
-    React.useEffect(() => {
-      if (!containerRef.current) return;
-      const ro = new ResizeObserver((entries) => {
-        for (const e of entries) {
-          const w = Math.max(260, Math.floor(e.contentRect.width));
-          setWidth(w);
-        }
-      });
-      ro.observe(containerRef.current);
-      return () => ro.disconnect();
-    }, []);
+  React.useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const w = Math.max(260, Math.floor(e.contentRect.width));
+        setWidth(w);
+      }
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
-    if (!data.length) return <div className="h-[72px] text-sm text-zinc-500">No data</div>;
+  if (!data.length) return <div className="h-[72px] text-sm text-zinc-500">No data</div>;
 
-    const xs = data.map((d) => d.t);
-    const minX = Math.min(...xs), maxX = Math.max(...xs);
-    const minY = 4, maxY = 10; // scala 4..10 come richiesto
+  const xs = data.map((d) => d.t);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = 4, maxY = 10; // scala 4..10
 
-    const W = width, H = height;
-    const innerW = W - padding * 2;
-    const innerH = H - padding * 2;
-    const nx = (x: number) => padding + (maxX === minX ? 0.5 : (x - minX) / (maxX - minX)) * innerW;
-    const ny = (y: number) => padding + (1 - (y - minY) / (maxY - minY)) * innerH;
+  const W = width, H = height;
+  const innerW = W - padding * 2;
+  const innerH = H - padding * 2;
+  const nx = (x: number) => padding + (maxX === minX ? 0.5 : (x - minX) / (maxX - minX)) * innerW;
+  const ny = (y: number) => padding + (1 - (y - minY) / (maxY - minY)) * innerH;
 
-    const pts = data.map((p) => ({ x: nx(p.t), y: ny(p.avg) }));
-    const d = pts.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
-    const last = pts[pts.length - 1];
+  const pts = data.map((p) => ({
+    x: nx(p.t),
+    y: ny(p.avg),
+    avg: p.avg,
+    title: p.title,
+    label: p.label,
+  }));
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
 
-    const yTicks = [4, 5, 6, 7, 8, 9, 10];
+  const yTicks = [4, 5, 6, 7, 8, 9, 10];
+
+  // helper per posizionare il tooltip nel container
+  function toLocal(e: React.MouseEvent) {
+    const rect = containerRef.current!.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return { boxX: x + 10, boxY: y + 10 }; // offset 10px
+  }
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <svg width={W} height={H} className="block">
+        <defs>
+          <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopOpacity="0.35" />
+            <stop offset="100%" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+
+        {/* griglia */}
+        {yTicks.map((y) => (
+          <line key={y} x1={padding} x2={W - padding} y1={ny(y)} y2={ny(y)}
+                stroke="currentColor" className="text-zinc-800 dark:text-zinc-700" strokeWidth={0.5} />
+        ))}
+
+        {/* area + linea */}
+        <path d={`${d} L ${W - padding},${H - padding} L ${padding},${H - padding} Z`} fill={`url(#area-${gid})`} />
+        <path d={d} fill="none" strokeWidth={2.5} className="text-emerald-500" stroke="currentColor" />
+
+        {/* punti + hit-area con event handlers */}
+        {pts.map((p, i) => (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r={3} className="text-emerald-500" fill="currentColor" />
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={14}
+              fill="white"
+              fillOpacity="0"
+              pointerEvents="all"
+              onMouseEnter={(e) => setHover({ ...p, ...toLocal(e) })}
+              onMouseMove={(e) => setHover((prev) => ({ ...(prev || p), ...p, ...toLocal(e) }))}
+              onMouseLeave={() => setHover(null)}
+            />
+          </g>
+        ))}
+
+        {/* etichette Y */}
+        {yTicks.map((y) => (
+          <text key={y} x={4} y={ny(y) + 3} className="fill-current text-[10px] text-zinc-500">{y}</text>
+        ))}
+      </svg>
+
+      {/* tooltip overlay */}
+      {hover && (
+        <div
+          className="pointer-events-none absolute max-w-[280px] rounded-lg border border-zinc-700/60 bg-zinc-900/90 px-3 py-2 text-xs shadow-xl"
+          style={{
+            left: Math.min(Math.max(0, hover.boxX), W - 180),
+            top: Math.min(Math.max(0, hover.boxY), H - 60),
+          }}
+        >
+          <div className="font-semibold">{hover.title || "Untitled"}</div>
+          {hover.label && <div className="opacity-70">{hover.label}</div>}
+          <div className="mt-1">Avg: {formatScore(hover.avg)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+  function Histogram({ values }: { values: number[] }) {
+    const buckets = Array.from({ length: 10 }, (_, i) => i + 1);
+    const counts = buckets.map((b) => values.filter((v) => Math.round(v) === b).length);
+    const max = Math.max(1, ...counts);
+
+    // colori per fascia voto
+    function colorForBucket(b: number) {
+      if (b <= 3) return { bar: "from-rose-500 to-rose-400", dot: "bg-rose-500" };
+      if (b <= 6) return { bar: "from-amber-400 to-yellow-300", dot: "bg-amber-400" };
+      return { bar: "from-emerald-500 to-green-400", dot: "bg-emerald-500" };
+    }
+
+    const H = 90;            // altezza totale area barre
+    const barMaxH = 68;      // altezza utile barra
+    const gridY = [0.5];     // una tacca al 50%
 
     return (
-      <div ref={containerRef} className="w-full">
-        <svg width={W} height={H} className="block">
-          <defs>
-            <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopOpacity="0.35" />
-              <stop offset="100%" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-
-          {/* griglia */}
-          {yTicks.map((y) => (
-            <line key={y} x1={padding} x2={W - padding} y1={ny(y)} y2={ny(y)} stroke="currentColor" className="text-zinc-800 dark:text-zinc-700" strokeWidth={0.5} />
+      <div className="relative">
+        {/* griglia orizzontale leggera */}
+        <div className="absolute inset-x-0 top-0 h-[90px]">
+          {gridY.map((g, idx) => (
+            <div
+              key={idx}
+              className="absolute inset-x-0 border-t border-dashed border-zinc-700/40"
+              style={{ top: `${(1 - g) * H}px` }}
+            />
           ))}
+        </div>
 
-          {/* area + linea */}
-          <path d={`${d} L ${W - padding},${H - padding} L ${padding},${H - padding} Z`} fill={`url(#area-${gid})`} />
-          <path d={d} fill="none" strokeWidth={2.5} className="text-emerald-500" stroke="currentColor" />
-          {last && <circle cx={last.x} cy={last.y} r={4} className="text-emerald-500" fill="currentColor" />}
+        <div className="relative grid grid-cols-10 items-end gap-6">
+          {counts.map((c, i) => {
+            const { bar, dot } = colorForBucket(i + 1);
+            const h = (c / max) * barMaxH + (c > 0 ? 6 : 2); // min visivo
+            return (
+              <div key={i} className="flex flex-col items-center">
+                {/* barra */}
+                <div
+                  className={`w-10 rounded-lg bg-gradient-to-t shadow-sm ${bar}`}
+                  style={{ height: `${h}px` }}
+                  title={`${c} vote${c !== 1 ? "s" : ""} on ${i + 1}`}
+                  aria-label={`${c} votes on ${i + 1}`}
+                />
 
-          {/* etichette Y */}
-          {yTicks.map((y) => (
-            <text key={y} x={4} y={ny(y) + 3} className="fill-current text-[10px] text-zinc-500">{y}</text>
-          ))}
-        </svg>
+                {/* numero ben visibile sotto la barra */}
+                <div className="mt-1 flex items-center gap-1 text-xs tabular-nums">
+                  <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
+                  <span className="font-semibold text-zinc-100">{c}</span>
+                </div>
+
+                {/* etichetta asse X */}
+                <span className="text-[10px] text-zinc-400">{i + 1}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* legenda colori (basso/medio/alto) */}
+        <div className="mt-2 flex items-center gap-4 text-[11px] text-zinc-400">
+          <span className="flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-rose-500" /> 1–3
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-amber-400" /> 4–6
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" /> 7–10
+          </span>
+        </div>
       </div>
     );
   }
 
-function Histogram({ values }: { values: number[] }) {
-  const buckets = Array.from({ length: 10 }, (_, i) => i + 1);
-  const counts = buckets.map((b) => values.filter((v) => Math.round(v) === b).length);
-  const max = Math.max(1, ...counts);
+  type DiffVariant = "closest" | "farthest";
 
-  // colori per fascia voto
-  function colorForBucket(b: number) {
-    if (b <= 3) return { bar: "from-rose-500 to-rose-400", dot: "bg-rose-500" };
-    if (b <= 6) return { bar: "from-amber-400 to-yellow-300", dot: "bg-amber-400" };
-    return { bar: "from-emerald-500 to-green-400", dot: "bg-emerald-500" };
+  function DiffPill({
+    user,
+    imdb,
+    variant = "closest",
+  }: { user: number; imdb: number; variant?: DiffVariant }) {
+    const diff = Math.abs(user - imdb);
+    const maxDiff = 5; // oltre Δ5 consideriamo "massimo distacco"
+
+    // fill: inverso per 'closest', diretto per 'farthest'
+    const direct = Math.min(100, Math.max(5, (diff / maxDiff) * 100));
+    const inverse = diff === 0 ? 100 : Math.min(100, Math.max(5, 100 - (diff / maxDiff) * 100));
+    const pct = variant === "farthest" ? direct : inverse;
+
+    // colore barra: sempre rosso per farthest; graduale per closest
+    const fill =
+      variant === "farthest"
+        ? "bg-rose-500"
+        : diff <= 0.75
+        ? "bg-emerald-500"
+        : diff <= 1.5
+        ? "bg-amber-400"
+        : "bg-rose-500";
+
+    // chip colore (solo feedback, non influisce sulla barra)
+    const chip =
+      diff <= 0.75
+        ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+        : diff <= 1.5
+        ? "bg-amber-400/20 text-amber-200 border-amber-400/40"
+        : "bg-rose-500/20 text-rose-200 border-rose-500/40";
+
+    return (
+      <div className="flex w-full min-w-0 items-center gap-2">
+        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${chip}`}>
+          Δ {formatScore(diff)}
+        </span>
+        <div className="relative h-3 flex-1 min-w-0 overflow-hidden rounded-full bg-zinc-300/50 dark:bg-zinc-800">
+          <div className={`h-3 ${fill}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[11px] leading-none text-zinc-500 tabular-nums dark:border-zinc-700">
+          {formatScore(user)} / {formatScore(imdb)}
+        </span>
+      </div>
+    );
   }
-
-  const H = 90;            // altezza totale area barre
-  const barMaxH = 68;      // altezza utile barra
-  const gridY = [0.5];     // una tacca al 50% (puoi aggiungere 0.25, 0.75…)
-
-  return (
-    <div className="relative">
-      {/* griglia orizzontale leggera */}
-      <div className="absolute inset-x-0 top-0 h-[90px]">
-        {gridY.map((g, idx) => (
-          <div
-            key={idx}
-            className="absolute inset-x-0 border-t border-dashed border-zinc-700/40"
-            style={{ top: `${(1 - g) * H}px` }}
-          />
-        ))}
-      </div>
-
-      <div className="relative grid grid-cols-10 items-end gap-6">
-        {counts.map((c, i) => {
-          const { bar, dot } = colorForBucket(i + 1);
-          const h = (c / max) * barMaxH + (c > 0 ? 6 : 2); // min visivo
-          return (
-            <div key={i} className="flex flex-col items-center">
-              {/* barra */}
-              <div
-                className={`w-10 rounded-lg bg-gradient-to-t shadow-sm ${bar}`}
-                style={{ height: `${h}px` }}
-                title={`${c} vote${c !== 1 ? "s" : ""} on ${i + 1}`}
-                aria-label={`${c} votes on ${i + 1}`}
-              />
-
-              {/* numero ben visibile sotto la barra */}
-              <div className="mt-1 flex items-center gap-1 text-xs tabular-nums">
-                <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
-                <span className="font-semibold text-zinc-100">{c}</span>
-              </div>
-
-              {/* etichetta asse X */}
-              <span className="text-[10px] text-zinc-400">{i + 1}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* legenda colori (basso/medio/alto) */}
-      <div className="mt-2 flex items-center gap-4 text-[11px] text-zinc-400">
-        <span className="flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-rose-500" /> 1–3
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-amber-400" /> 4–6
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-emerald-500" /> 7–10
-        </span>
-      </div>
-    </div>
-  );
-}
-
-
-type DiffVariant = "closest" | "farthest";
-
-function DiffPill({
-  user,
-  imdb,
-  variant = "closest",
-}: { user: number; imdb: number; variant?: DiffVariant }) {
-  const diff = Math.abs(user - imdb);
-  const maxDiff = 5; // oltre Δ5 consideriamo "massimo distacco"
-
-  // fill: inverso per 'closest', diretto per 'farthest'
-  const direct = Math.min(100, Math.max(5, (diff / maxDiff) * 100));
-  const inverse = diff === 0 ? 100 : Math.min(100, Math.max(5, 100 - (diff / maxDiff) * 100));
-  const pct = variant === "farthest" ? direct : inverse;
-
-  // colore barra: sempre rosso per farthest; graduale per closest
-  const fill =
-    variant === "farthest"
-      ? "bg-rose-500"
-      : diff <= 0.75
-      ? "bg-emerald-500"
-      : diff <= 1.5
-      ? "bg-amber-400"
-      : "bg-rose-500";
-
-  // chip colore (solo feedback, non influisce sulla barra)
-  const chip =
-    diff <= 0.75
-      ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
-      : diff <= 1.5
-      ? "bg-amber-400/20 text-amber-200 border-amber-400/40"
-      : "bg-rose-500/20 text-rose-200 border-rose-500/40";
-
-  return (
-    <div className="flex w-full min-w-0 items-center gap-2">
-      <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${chip}`}>
-        Δ {formatScore(diff)}
-      </span>
-      <div className="relative h-3 flex-1 min-w-0 overflow-hidden rounded-full bg-zinc-300/50 dark:bg-zinc-800">
-        <div className={`h-3 ${fill}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[11px] leading-none text-zinc-500 tabular-nums dark:border-zinc-700">
-        {formatScore(user)} / {formatScore(imdb)}
-      </span>
-    </div>
-  );
-}
-
 
   // ===================== Render =====================
   return (
@@ -550,9 +620,9 @@ function DiffPill({
       <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <StarIcon className="h-5 w-5" />
-  Most votes given
-</h3>
+            <StarIcon className="h-5 w-5" />
+            Most votes given
+          </h3>
 
           {isLoading && givenArr.length === 0 ? (
             <LoadingRow />
@@ -578,9 +648,9 @@ function DiffPill({
 
         <Card>
           <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <FireIcon className="h-5 w-5 text-rose-500" />
-  Harshest
-</h3>
+            <FireIcon className="h-5 w-5 text-rose-500" />
+            Harshest
+          </h3>
           {isLoading && givenArr.length === 0 ? (
             <LoadingRow />
           ) : (
@@ -603,9 +673,9 @@ function DiffPill({
 
         <Card>
           <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <HeartIcon className="h-5 w-5 text-emerald-500" />
-  Kindest
-</h3>
+            <HeartIcon className="h-5 w-5 text-emerald-500" />
+            Kindest
+          </h3>
 
           {isLoading && givenArr.length === 0 ? (
             <LoadingRow />
@@ -631,9 +701,9 @@ function DiffPill({
       {/* Avg ricevuto dai picker */}
       <Card>
         <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <FilmIcon className="h-5 w-5" />
-  Avg score received by pickers
-</h3>
+          <FilmIcon className="h-5 w-5" />
+          Avg score received by pickers
+        </h3>
         {isLoading && receivedArr.length === 0 ? (
           <LoadingRow />
         ) : receivedArr.length === 0 ? (
@@ -657,9 +727,9 @@ function DiffPill({
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <TrophyIcon className="h-5 w-5" />
-  Top 5 movies
-</h3>
+            <TrophyIcon className="h-5 w-5" />
+            Top 5 movies
+          </h3>
           {isLoading && bestMovies.length === 0 ? (
             <LoadingRow />
           ) : bestMovies.length === 0 ? (
@@ -684,9 +754,9 @@ function DiffPill({
 
         <Card>
           <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <BoltIcon className="h-5 w-5 text-rose-500" />
-  Flop 5 movies
-</h3>
+            <BoltIcon className="h-5 w-5 text-rose-500" />
+            Flop 5 movies
+          </h3>
           {isLoading && worstMovies.length === 0 ? (
             <LoadingRow />
           ) : worstMovies.length === 0 ? (
@@ -710,72 +780,72 @@ function DiffPill({
         </Card>
       </div>
 
-{/* Closest/Farthest to IMDb – media gruppo */}
-<div className="grid gap-4 lg:grid-cols-2">
-  <Card>
-    <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <ChartBarIcon className="h-5 w-5" />
-  Closest to IMDb
-</h3>
-    {groupImdbCompare.closest.length === 0 ? (
-      <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
-    ) : (
-      <ol className="grid gap-2">
-        {groupImdbCompare.closest.map((r, i) => (
-          <li
-            key={r.id}
-            className="flex items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-          >
-            {/* titolo larghezza consistente */}
-            <span className="truncate font-medium min-w-[180px]">
-              {i + 1}. {r.title}
-            </span>
-            {/* barra: più Δ basso ⇒ più piena (verde/ambra/rosso) */}
-            <div className="flex w-full items-center">
-              <DiffPill variant="closest" user={r.avg} imdb={r.ref} />
-            </div>
-          </li>
-        ))}
-      </ol>
-    )}
-  </Card>
+      {/* Closest/Farthest to IMDb – media gruppo */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <ChartBarIcon className="h-5 w-5" />
+            Closest to IMDb
+          </h3>
+          {groupImdbCompare.closest.length === 0 ? (
+            <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
+          ) : (
+            <ol className="grid gap-2">
+              {groupImdbCompare.closest.map((r, i) => (
+                <li
+                  key={r.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  {/* titolo larghezza consistente */}
+                  <span className="truncate font-medium min-w-[180px]">
+                    {i + 1}. {r.title}
+                  </span>
+                  {/* barra: più Δ basso ⇒ più piena (verde/ambra/rosso) */}
+                  <div className="flex w-full items-center">
+                    <DiffPill variant="closest" user={r.avg} imdb={r.ref} />
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </Card>
 
-  <Card>
-    <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <BoltIcon className="h-5 w-5" />
-  Farthest from IMDb
-</h3>
-    {groupImdbCompare.farthest.length === 0 ? (
-      <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
-    ) : (
-      <ol className="grid gap-2">
-        {groupImdbCompare.farthest.map((r, i) => (
-          <li
-            key={r.id}
-            className="flex items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-          >
-            {/* titolo larghezza consistente */}
-            <span className="truncate font-medium min-w-[180px]">
-              {i + 1}. {r.title}
-            </span>
-            {/* barra: più Δ alto ⇒ più piena (rossa) */}
-            <div className="flex w-full items-center">
-              <DiffPill variant="farthest" user={r.avg} imdb={r.ref} />
-            </div>
-          </li>
-        ))}
-      </ol>
-    )}
-  </Card>
-</div>
+        <Card>
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <BoltIcon className="h-5 w-5" />
+            Farthest from IMDb
+          </h3>
+          {groupImdbCompare.farthest.length === 0 ? (
+            <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
+          ) : (
+            <ol className="grid gap-2">
+              {groupImdbCompare.farthest.map((r, i) => (
+                <li
+                  key={r.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  {/* titolo larghezza consistente */}
+                  <span className="truncate font-medium min-w-[180px]">
+                    {i + 1}. {r.title}
+                  </span>
+                  {/* barra: più Δ alto ⇒ più piena (rossa) */}
+                  <div className="flex w-full items-center">
+                    <DiffPill variant="farthest" user={r.avg} imdb={r.ref} />
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </Card>
+      </div>
 
       {/* --- Pannello per utente --------------------------------- */}
       <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h3 className="flex items-center gap-2 text-lg font-semibold">
-  <UserCircleIcon className="h-5 w-5" />
-  Stats per utente
-</h3>
+            <UserCircleIcon className="h-5 w-5" />
+            Stats per utente
+          </h3>
 
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-500">Select user</span>
