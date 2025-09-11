@@ -1,52 +1,40 @@
 import React from "react";
 import { Card } from "../Components/UI/Card";
-import { formatScore } from "..//Utils/Utils";
-import { AvatarInline } from "../Components/UI/Avatar"; // opzionale: mostrale se disponibile
-import { PickedByBadge } from "../Components/UI/PickedByBadge"; // badge con avatar e nome
+import { formatScore } from "../Utils/Utils";
+import { AvatarInline } from "../Components/UI/Avatar";
+import { PickedByBadge } from "../Components/UI/PickedByBadge";
 
-/* =============================================================
- *  Stats – versione potenziata (grafici, UI accattivante, filtro utente)
- *
- *  - KPI cards animate
- *  - Grafico timeline (sparkline) dell'avg nel tempo
- *  - Classifiche: Most votes / Harshest / Kindest con progress bar
- *  - Generi: top 12 con barre orizzontali
- *  - Top / Flop film con badge
- *  - Pannello "Per Utente": selettore + donut avg, istogramma voti,
- *    bias vs media (quanto vota più alto/basso della media), generi preferiti
- *
- *  Dipendenze: solo React + Tailwind + i tuoi componenti Card/AvatarInline.
- *  Grafici: SVG puro, nessuna lib esterna.
- * ============================================================= */
+// =============================================================
+// Stats potenziato con grafici, badge e confronto IMDb
+// =============================================================
+
+// Helper per IMDb/ref score (fallback su TMDB vote_average)
+function refScoreFor(v: any): number | null {
+  const m = v?.movie || {};
+  const cand =
+    m.imdb_rating ?? m.imdbRating ?? m.imdb_score ??
+    m?.ratings?.imdb ?? m?.omdb?.imdbRating ?? m.vote_average;
+  const n = Number(cand);
+  return Number.isFinite(n) ? n : null;
+}
 
 export function Stats({
   history,
-  backfillRuntime, // optional: () => void
+  backfillRuntime,
   isLoading = false,
 }: {
   history: any[];
   backfillRuntime?: () => void;
   isLoading?: boolean;
 }) {
-  // Avvio backfill runtime se mancano
+  // Se mancano runtime, prova a backfillare
   React.useEffect(() => {
     if (!backfillRuntime) return;
     const hasRt = history.some((h) => Number((h?.movie as any)?.runtime) > 0);
     if (!hasRt && !isLoading && history.length > 0) backfillRuntime();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history, isLoading, backfillRuntime]);
 
-  // Helpers -----------------------------------------------------
-
-  function refScoreFor(v: any): number | null {
-    const m = v?.movie || {};
-    const cand =
-      m.imdb_rating ?? m.imdbRating ?? m.imdb_score ??
-      m?.ratings?.imdb ?? m?.omdb?.imdbRating ?? m.vote_average;
-    const n = Number(cand);
-    return Number.isFinite(n) ? n : null;
-  }
-
+  // ---- Helpers aggregazione
   const avgOf = (r?: Record<string, number> | null) => {
     if (!r) return null;
     const vals = Object.values(r).map(Number).filter((x) => Number.isFinite(x));
@@ -54,11 +42,11 @@ export function Stats({
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   };
 
-  // Aggregazioni ------------------------------------------------
-  const givenMap = new Map<string, { sum: number; n: number; scores: number[] }>(); // voti dati
-  const receivedMap = new Map<string, { sum: number; n: number }>(); // avg ricevuto come picker
+  // ---- Aggregazioni
+  const givenMap = new Map<string, { sum: number; n: number; scores: number[] }>();
+  const receivedMap = new Map<string, { sum: number; n: number }>();
   const genreCount = new Map<string, number>();
-  const userGenreLikes = new Map<string, Map<string, number>>(); // per utente: generi dei voti >= 8
+  const userGenreLikes = new Map<string, Map<string, number>>();
   let totalMinutes = 0;
   let totalMinutesKnown = 0;
   const movieStats: Array<{ id: any; title: string; avg: number; votes: number; date: number; picked_by?: string }>=[];
@@ -126,7 +114,7 @@ export function Stats({
     }
   }
 
-  // Derivate ordinate ------------------------------------------
+  // ---- Derivate ordinate
   const givenArr = Array.from(givenMap, ([user, { sum, n, scores }]) => ({
     user,
     avg: sum / Math.max(1, n),
@@ -171,7 +159,7 @@ export function Stats({
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)) : [];
 
-  // Calcolo bias vs media: media delle (voto_utente - avg_film) su tutti i film votati
+  // Bias medio dell'utente rispetto alla media film
   const bias = React.useMemo(() => {
     if (!selectedUser) return null;
     let sum = 0, n = 0;
@@ -192,30 +180,43 @@ export function Stats({
   // Timeline ordinata per grafico
   const timelineSorted = React.useMemo(() => timeline.slice().sort((a, b) => a.t - b.t), [history.length]);
 
-  // Confronto selezionato vs IMDb: lista con diff
+  // Confronto selezionato vs IMDb
   const userImdbCompare = React.useMemo(() => {
     if (!selectedUser) return { closest: [], farthest: [] as any[] };
     const rows: Array<{ id:any; title:string; userScore:number; ref:number; diff:number }> = [];
-
     for (const v of history) {
       const userScore = Number(v?.ratings?.[selectedUser]);
       const ref = refScoreFor(v);
       if (!Number.isFinite(userScore) || !Number.isFinite(ref)) continue;
-      rows.push({
-        id: v.id,
-        title: v?.movie?.title || "Untitled",
-        userScore,
-        ref,
-        diff: Math.abs(userScore - ref),
-      });
+      rows.push({ id: v.id, title: v?.movie?.title || "Untitled", userScore, ref, diff: Math.abs(userScore - ref) });
     }
-
     const byClosest = rows.slice().sort((a, b) => a.diff - b.diff).slice(0, 5);
     const byFarthest = rows.slice().sort((a, b) => b.diff - a.diff).slice(0, 5);
     return { closest: byClosest, farthest: byFarthest };
   }, [selectedUser, history]);
 
-  // Componenti visual ------------------------------------------------
+
+  // Confronto media gruppo vs IMDb (per film)
+const groupImdbCompare = React.useMemo(() => {
+  const rows: Array<{ id:any; title:string; avg:number; ref:number; diff:number }> = [];
+  for (const v of history) {
+    const avg = avgOf(v?.ratings);
+    const ref = refScoreFor(v);
+    if (avg == null || ref == null) continue;
+    rows.push({
+      id: v.id,
+      title: v?.movie?.title || "Untitled",
+      avg,
+      ref,
+      diff: Math.abs(avg - ref),
+    });
+  }
+  const closest = rows.slice().sort((a,b)=> a.diff - b.diff).slice(0,5);
+  const farthest = rows.slice().sort((a,b)=> b.diff - a.diff).slice(0,5);
+  return { closest, farthest };
+}, [history.length]);
+
+  // ===================== Componenti visuali =====================
   const LoadingRow = () => (
     <div className="rounded-xl border px-3 py-2 text-sm text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
       <span className="animate-pulse">Loading…</span>
@@ -230,25 +231,6 @@ export function Stats({
       </div>
     );
   }
-
-  function DiffPill({ user, ref }: { user: number; ref: number }) {
-  const diff = Math.abs(user - ref);
-  const maxDiff = 9; // scala 1..10 → max 9
-  const pct = Math.min(100, (diff / maxDiff) * 100);
-  const tone =
-    diff <= 0.25 ? "from-emerald-500/20 to-emerald-500/10 ring-emerald-500/30" :
-    diff <= 0.75 ? "from-amber-400/20 to-amber-400/10 ring-amber-400/30" :
-                   "from-rose-500/20 to-rose-500/10 ring-rose-500/30";
-
-  return (
-    <div className={`relative w-40 rounded-full ring-1 bg-gradient-to-br ${tone}`}>
-      <div className="h-2 rounded-full bg-white/50 dark:bg-white/10" style={{ width: `${pct}%` }} />
-      <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold">
-        Δ {formatScore(diff)} · you {formatScore(user)} / IMDb {formatScore(ref)}
-      </div>
-    </div>
-  );
-}
 
   function BarRow({ label, value, max }: { label: string; value: number; max: number }) {
     const pct = max ? Math.round((value / max) * 100) : 0;
@@ -288,74 +270,70 @@ export function Stats({
     );
   }
 
-function Sparkline({ data, height = 120, padding = 12 }: { data: Array<{ t: number; avg: number }>; height?: number; padding?: number }) {
-const containerRef = React.useRef<HTMLDivElement>(null);
-const [width, setWidth] = React.useState(420);
-const gid = (React as any).useId ? (React as any).useId() : "sg";
+  function Sparkline({ data, height = 120, padding = 12 }: { data: Array<{ t: number; avg: number }>; height?: number; padding?: number }) {
+    const containerRef = React.useRef<HTMLDivElement>(null);
+    const [width, setWidth] = React.useState(420);
+    const gid = (React as any).useId ? (React as any).useId() : "sg";
 
+    React.useEffect(() => {
+      if (!containerRef.current) return;
+      const ro = new ResizeObserver((entries) => {
+        for (const e of entries) {
+          const w = Math.max(260, Math.floor(e.contentRect.width));
+          setWidth(w);
+        }
+      });
+      ro.observe(containerRef.current);
+      return () => ro.disconnect();
+    }, []);
 
-React.useEffect(() => {
-if (!containerRef.current) return;
-const ro = new ResizeObserver((entries) => {
-for (const e of entries) {
-const w = Math.max(260, Math.floor(e.contentRect.width));
-setWidth(w);
-}
-});
-ro.observe(containerRef.current);
-return () => ro.disconnect();
-}, []);
+    if (!data.length) return <div className="h-[72px] text-sm text-zinc-500">No data</div>;
 
+    const xs = data.map((d) => d.t);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = 4, maxY = 10; // scala 4..10 come richiesto
 
-if (!data.length) return <div className="h-[72px] text-sm text-zinc-500">No data</div>;
+    const W = width, H = height;
+    const innerW = W - padding * 2;
+    const innerH = H - padding * 2;
+    const nx = (x: number) => padding + (maxX === minX ? 0.5 : (x - minX) / (maxX - minX)) * innerW;
+    const ny = (y: number) => padding + (1 - (y - minY) / (maxY - minY)) * innerH;
 
+    const pts = data.map((p) => ({ x: nx(p.t), y: ny(p.avg) }));
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
+    const last = pts[pts.length - 1];
 
-const xs = data.map((d) => d.t);
-const minX = Math.min(...xs), maxX = Math.max(...xs);
-const minY = 4, maxY = 10;
+    const yTicks = [4, 5, 6, 7, 8, 9, 10];
 
+    return (
+      <div ref={containerRef} className="w-full">
+        <svg width={W} height={H} className="block">
+          <defs>
+            <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopOpacity="0.35" />
+              <stop offset="100%" stopOpacity="0" />
+            </linearGradient>
+          </defs>
 
-const W = width, H = height;
-const innerW = W - padding * 2;
-const innerH = H - padding * 2;
-const nx = (x: number) => padding + (maxX === minX ? 0.5 : (x - minX) / (maxX - minX)) * innerW;
-const ny = (y: number) => padding + (1 - (y - minY) / (maxY - minY)) * innerH;
+          {/* griglia */}
+          {yTicks.map((y) => (
+            <line key={y} x1={padding} x2={W - padding} y1={ny(y)} y2={ny(y)} stroke="currentColor" className="text-zinc-800 dark:text-zinc-700" strokeWidth={0.5} />
+          ))}
 
+          {/* area + linea */}
+          <path d={`${d} L ${W - padding},${H - padding} L ${padding},${H - padding} Z`} fill={`url(#area-${gid})`} />
+          <path d={d} fill="none" strokeWidth={2.5} className="text-emerald-500" stroke="currentColor" />
+          {last && <circle cx={last.x} cy={last.y} r={4} className="text-emerald-500" fill="currentColor" />}
 
-const pts = data.map((p) => ({ x: nx(p.t), y: ny(p.avg) }));
-const d = pts.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
-const last = pts[pts.length - 1];
+          {/* etichette Y */}
+          {yTicks.map((y) => (
+            <text key={y} x={4} y={ny(y) + 3} className="fill-current text-[10px] text-zinc-500">{y}</text>
+          ))}
+        </svg>
+      </div>
+    );
+  }
 
-
-return (
-<div ref={containerRef} className="w-full">
-<svg width={W} height={H} className="block">
-{/* grid lines */}
-{Array.from({ length: 10 }, (_, i) => i + 1).map((y) => (
-<line
-key={y}
-x1={padding}
-x2={W - padding}
-y1={ny(y)}
-y2={ny(y)}
-stroke="currentColor"
-className="text-zinc-800 dark:text-zinc-700"
-strokeWidth={0.5}
-/>
-))}
-{/* line path */}
-<path d={d} fill="none" strokeWidth={2.5} className="text-emerald-500" stroke="currentColor" />
-{last && <circle cx={last.x} cy={last.y} r={4} className="text-emerald-500" fill="currentColor" />}
-{/* y labels */}
-{Array.from({ length: 10 }, (_, i) => i + 1).map((y) => (
-<text key={y} x={2} y={ny(y) + 3} className="fill-current text-[10px] text-zinc-500">
-{y}
-</text>
-))}
-</svg>
-</div>
-);
-}
   function Histogram({ values }: { values: number[] }) {
     const buckets = Array.from({ length: 10 }, (_, i) => i + 1);
     const counts = buckets.map((b) => values.filter((v) => Math.round(v) === b).length);
@@ -372,6 +350,56 @@ strokeWidth={0.5}
     );
   }
 
+type DiffVariant = "closest" | "farthest";
+
+function DiffPill({
+  user,
+  imdb,
+  variant = "closest",
+}: { user: number; imdb: number; variant?: DiffVariant }) {
+  const diff = Math.abs(user - imdb);
+  const maxDiff = 5; // oltre Δ5 consideriamo "massimo distacco"
+
+  // fill: inverso per 'closest', diretto per 'farthest'
+  const direct = Math.min(100, Math.max(5, (diff / maxDiff) * 100));
+  const inverse = diff === 0 ? 100 : Math.min(100, Math.max(5, 100 - (diff / maxDiff) * 100));
+  const pct = variant === "farthest" ? direct : inverse;
+
+  // colore barra: sempre rosso per farthest; graduale per closest
+  const fill =
+    variant === "farthest"
+      ? "bg-rose-500"
+      : diff <= 0.75
+      ? "bg-emerald-500"
+      : diff <= 1.5
+      ? "bg-amber-400"
+      : "bg-rose-500";
+
+  // chip colore (solo feedback, non influisce sulla barra)
+  const chip =
+    diff <= 0.75
+      ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+      : diff <= 1.5
+      ? "bg-amber-400/20 text-amber-200 border-amber-400/40"
+      : "bg-rose-500/20 text-rose-200 border-rose-500/40";
+
+  return (
+    <div className="flex w-full min-w-0 items-center gap-2">
+      <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${chip}`}>
+        Δ {formatScore(diff)}
+      </span>
+      <div className="relative h-3 flex-1 min-w-0 overflow-hidden rounded-full bg-zinc-300/50 dark:bg-zinc-800">
+        <div className={`h-3 ${fill}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[11px] leading-none text-zinc-500 tabular-nums dark:border-zinc-700">
+        {formatScore(user)} / {formatScore(imdb)}
+      </span>
+    </div>
+  );
+}
+
+
+  // ===================== Render =====================
   return (
     <div className="grid gap-5">
       {/* KPI row */}
@@ -533,19 +561,16 @@ strokeWidth={0.5}
           ) : (
             <ol className="grid gap-2">
               {bestMovies.map((m, i) => (
-              <li
-                key={m.id}
-                className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="text-zinc-400 tabular-nums">{i + 1}.</span>
-                  {!!m.picked_by && <PickedByBadge name={m.picked_by} />}
-                  <span className="truncate">{m.title}</span>
-                </div>
-                <span className="shrink-0 rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700">
-                  avg <b>{formatScore(m.avg)}</b> · {m.votes} votes
-                </span>
-              </li>
+                <li key={m.id} className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="text-zinc-400 tabular-nums">{i + 1}.</span>
+                    {!!m.picked_by && <PickedByBadge name={m.picked_by} />}
+                    <span className="truncate">{m.title}</span>
+                  </div>
+                  <span className="shrink-0 rounded-full border px-2 py-0.5 text-xs dark:border-zinc-700">
+                    avg <b>{formatScore(m.avg)}</b> · {m.votes} votes
+                  </span>
+                </li>
               ))}
             </ol>
           )}
@@ -560,10 +585,7 @@ strokeWidth={0.5}
           ) : (
             <ol className="grid gap-2">
               {worstMovies.map((m, i) => (
-                <li
-                  key={m.id}
-                  className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                >
+                <li key={m.id} className="flex items-center justify-between rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="text-zinc-400 tabular-nums">{i + 1}.</span>
                     {!!m.picked_by && <PickedByBadge name={m.picked_by} />}
@@ -579,20 +601,67 @@ strokeWidth={0.5}
         </Card>
       </div>
 
+{/* Closest/Farthest to IMDb – media gruppo */}
+<div className="grid gap-4 lg:grid-cols-2">
+  <Card>
+    <h3 className="mb-3 text-lg font-semibold">🎯 Closest to IMDb (group avg)</h3>
+    {groupImdbCompare.closest.length === 0 ? (
+      <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
+    ) : (
+      <ol className="grid gap-2">
+        {groupImdbCompare.closest.map((r, i) => (
+          <li
+            key={r.id}
+            className="flex items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            {/* titolo larghezza consistente */}
+            <span className="truncate font-medium min-w-[180px]">
+              {i + 1}. {r.title}
+            </span>
+            {/* barra: più Δ basso ⇒ più piena (verde/ambra/rosso) */}
+            <div className="flex w-full items-center">
+              <DiffPill variant="closest" user={r.avg} imdb={r.ref} />
+            </div>
+          </li>
+        ))}
+      </ol>
+    )}
+  </Card>
+
+  <Card>
+    <h3 className="mb-3 text-lg font-semibold">⚡ Farthest from IMDb (group avg)</h3>
+    {groupImdbCompare.farthest.length === 0 ? (
+      <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
+    ) : (
+      <ol className="grid gap-2">
+        {groupImdbCompare.farthest.map((r, i) => (
+          <li
+            key={r.id}
+            className="flex items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            {/* titolo larghezza consistente */}
+            <span className="truncate font-medium min-w-[180px]">
+              {i + 1}. {r.title}
+            </span>
+            {/* barra: più Δ alto ⇒ più piena (rossa) */}
+            <div className="flex w-full items-center">
+              <DiffPill variant="farthest" user={r.avg} imdb={r.ref} />
+            </div>
+          </li>
+        ))}
+      </ol>
+    )}
+  </Card>
+</div>
+
       {/* --- Pannello per utente --------------------------------- */}
       <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold">👤 Stats per utente</h3>
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-500">Select user</span>
-            <select
-              className="rounded-lg border bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-              value={selectedUser || ""}
-              onChange={(e) => setSelectedUser(e.target.value || null)}
-            >
-              {userOptions.map((u) => (
-                <option key={u} value={u}>{u}</option>
-              ))}
+            <select className="rounded-lg border bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" value={selectedUser || ""} onChange={(e) => setSelectedUser(e.target.value || null)}>
+              {userOptions.map((u) => (<option key={u} value={u}>{u}</option>))}
             </select>
           </div>
         </div>
@@ -632,7 +701,7 @@ strokeWidth={0.5}
               </div>
             </div>
 
-            {/* Colonna destra: istogramma & generi */}
+            {/* Colonna destra: istogramma & generi & confronto IMDb */}
             <div className="grid gap-4">
               <div>
                 <div className="mb-2 flex items-center justify-between">
@@ -653,6 +722,59 @@ strokeWidth={0.5}
                     ))}
                   </div>
                 )}
+              </div>
+
+              {/* Similarità con IMDb per utente */}
+              <div className="grid gap-4 lg:grid-cols-2">
+                {/* Più simili a IMDb */}
+                <div className="rounded-xl border p-3 dark:border-zinc-700">
+                  <h4 className="mb-2 font-semibold">🎯 Closest to IMDb</h4>
+                  {userImdbCompare.closest.length === 0 ? (
+                    <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
+                  ) : (
+                    <ol className="grid gap-2">
+                      {userImdbCompare.closest.map((r, i) => (
+                        <li
+                          key={r.id}
+                          className="flex items-center gap-3 rounded-xl bg-zinc-50 px-2 py-1.5 dark:bg-zinc-900/60"
+                        >
+                          {/* titolo sempre stessa larghezza */}
+                          <span className="truncate text-sm font-medium min-w-[160px]">
+                            {i + 1}. {r.title}
+                          </span>
+
+                          {/* pill + barra + valori */}
+                          <DiffPill variant="closest" user={r.userScore} imdb={r.ref} />
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+
+                {/* Più diversi da IMDb */}
+                <div className="rounded-xl border p-3 dark:border-zinc-700">
+                  <h4 className="mb-2 font-semibold">⚡ Farthest from IMDb</h4>
+                  {userImdbCompare.farthest.length === 0 ? (
+                    <div className="text-sm text-zinc-500">Nessun confronto disponibile.</div>
+                  ) : (
+                    <ol className="grid gap-2">
+                      {userImdbCompare.farthest.map((r, i) => (
+                        <li
+                          key={r.id}
+                          className="flex items-center gap-3 rounded-xl bg-zinc-50 px-2 py-1.5 dark:bg-zinc-900/60"
+                        >
+                          {/* titolo sempre stessa larghezza */}
+                          <span className="truncate text-sm font-medium min-w-[160px]">
+                            {i + 1}. {r.title}
+                          </span>
+
+                          {/* pill + barra + valori */}
+                          <DiffPill variant="farthest" user={r.userScore} imdb={r.ref} />
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
               </div>
             </div>
           </div>

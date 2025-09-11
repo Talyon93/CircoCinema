@@ -13,15 +13,19 @@ import { PickedByBadge } from "./PickedByBadge";
 import { VoterChip } from "./VoterChip";
 import { formatScore } from "../../Utils/Utils";
 
-
 export function HistoryCardExtended({
   v,
   onEdit,
   onMetaResolved,
+  // NEW: posizione in classifica (opzionale)
+  rank,
+  total,
 }: {
   v: any;
   onEdit?: (id: any) => void;
   onMetaResolved?: (viewingId: any, nextMovie: any) => void;
+  rank?: number;   // posizione 1-based
+  total?: number;  // numero totale film in classifica
 }) {
   const ratings = (v.ratings || {}) as Record<string, number>;
   const entries = Object.entries(ratings) as [string, number][];
@@ -73,7 +77,7 @@ export function HistoryCardExtended({
 
     // 1) cache
     const cache = getMetaCache();
-    const cached = cache[title];
+    const cached = (cache as any)[title];
     if (cached && (cached.poster_path || cached.overview)) {
       setMeta((m) => {
         const merged = {
@@ -101,7 +105,7 @@ export function HistoryCardExtended({
             return merged;
           });
           const c = getMetaCache();
-          c[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
+          (c as any)[title] = { poster_path: fetched.poster_path, overview: fetched.overview };
           setMetaCache(c);
         }
       } finally {
@@ -121,8 +125,16 @@ export function HistoryCardExtended({
       <div className="relative h-16 w-16">
         <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
           <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-lime-400"
-                  strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}/>
+          <circle
+            cx="32"
+            cy="32"
+            r={r}
+            strokeWidth="8"
+            className="fill-none stroke-lime-400"
+            strokeLinecap="round"
+            strokeDasharray={c}
+            strokeDashoffset={c - (pct / 100) * c}
+          />
         </svg>
         <div className="absolute inset-0 grid place-items-center text-sm font-bold">
           {formatScore(value)}
@@ -130,6 +142,18 @@ export function HistoryCardExtended({
       </div>
     );
   };
+
+  const showRank = typeof rank === "number" && typeof total === "number" && total > 0;
+
+  const RankBadge = ({ pos, tot }: { pos: number; tot: number }) => (
+    <span
+      className="ml-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-gray-700 dark:text-zinc-300 dark:border-zinc-700"
+      title="Posizione in classifica (media voti)"
+    >
+      <span>🏆</span>
+      <span>#{pos}/{tot}</span>
+    </span>
+  );
 
   return (
     <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
@@ -145,6 +169,7 @@ export function HistoryCardExtended({
         <h3 className="min-w-0 text-lg font-semibold leading-tight">
           <span className="break-words">{v.movie?.title || "Untitled"}</span>
           {releaseYear && <span className="ml-2 text-gray-500">({releaseYear})</span>}
+          {showRank && <RankBadge pos={rank as number} tot={total as number} />}
         </h3>
 
         {onEdit && (
@@ -184,16 +209,42 @@ export function HistoryCardExtended({
             {releaseYear && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">📅 {releaseYear}</span>}
             {Number(v?.movie?.runtime) > 0 && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {v.movie.runtime} min</span>}
             {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
-            {typeof v?.movie?.imdb_rating === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(v.movie.imdb_rating)}</span>
-            ) : typeof v?.movie?.tmdb_vote_average === "number" ? (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ TMDB {formatScore(v.movie.tmdb_vote_average)}</span>
-            ) : null}
-            {typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0 && (
-              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
-                {v.movie.tmdb_vote_count.toLocaleString()} votes
-              </span>
-            )}
+            {(() => {
+              const imdbId = v?.movie?.imdb_id as string | undefined;
+              const imdbAvg = typeof v?.movie?.imdb_rating === "number" ? v.movie.imdb_rating : null;
+              const imdbVotes = typeof v?.movie?.imdb_votes === "number" ? v.movie.imdb_votes : null;
+
+              if (imdbId && (imdbAvg != null || imdbVotes != null)) {
+                return (
+                  <a
+                    href={`https://www.imdb.com/title/${imdbId}/`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-full border px-2 py-0.5 dark:border-zinc-700 underline-offset-2 hover:underline"
+                    title="Open on IMDb"
+                  >
+                    ★ IMDb{imdbAvg != null ? ` ${formatScore(imdbAvg)}` : ""}{imdbAvg != null && imdbVotes != null ? " • " : ""}
+                    {imdbVotes != null ? `${imdbVotes.toLocaleString()} votes` : ""}
+                  </a>
+                );
+              }
+
+              // Fallback su TMDB se non abbiamo IMDb
+              if (typeof v?.movie?.tmdb_vote_average === "number") {
+                const tmdbVotes =
+                  typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0
+                    ? v.movie.tmdb_vote_count
+                    : null;
+                return (
+                  <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                    ★ TMDB {formatScore(v.movie.tmdb_vote_average)}
+                    {tmdbVotes ? ` • ${tmdbVotes.toLocaleString()} votes` : ""}
+                  </span>
+                );
+              }
+
+              return null;
+            })()}
           </div>
 
           <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">

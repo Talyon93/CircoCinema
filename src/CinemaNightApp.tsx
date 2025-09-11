@@ -407,12 +407,37 @@ function ViewingModal({
               {year && <span className="rounded-full border border-zinc-700 px-2 py-0.5">📅 {year}</span>}
               {runtime && <span className="rounded-full border border-zinc-700 px-2 py-0.5">⏱ {runtime} min</span>}
               {genreLine && <span className="rounded-full border border-zinc-700 px-2 py-0.5">{genreLine}</span>}
-              {imdbRating != null ? (
-                <span className="rounded-full border border-zinc-700 px-2 py-0.5">★ IMDb {formatScore(imdbRating)}</span>
-              ) : tmdbAvg != null ? (
-                <span className="rounded-full border border-zinc-700 px-2 py-0.5">★ TMDB {formatScore(tmdbAvg)}</span>
-              ) : null}
-              {tmdbCount ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">{tmdbCount.toLocaleString()} votes</span> : null}
+              {(() => {
+                const imdbId = v?.movie?.imdb_id as string | undefined;
+                const imdbAvg = imdbRating;
+                const imdbVotes = typeof v?.movie?.imdb_votes === "number" ? v.movie.imdb_votes : null;
+
+                if (imdbId && (imdbAvg != null || imdbVotes != null)) {
+                  return (
+                    <a
+                      href={`https://www.imdb.com/title/${imdbId}/`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-full border border-zinc-700 px-2 py-0.5 underline-offset-2 hover:underline"
+                      title="Open on IMDb"
+                    >
+                      ★ IMDb{imdbAvg != null ? ` ${formatScore(imdbAvg)}` : ""}{imdbAvg != null && imdbVotes != null ? " • " : ""}
+                      {imdbVotes != null ? `${imdbVotes.toLocaleString()} votes` : ""}
+                    </a>
+                  );
+                }
+
+                // Fallback su TMDB se non abbiamo IMDb
+                if (tmdbAvg != null) {
+                  return (
+                    <span className="rounded-full border border-zinc-700 px-2 py-0.5">
+                      ★ TMDB {formatScore(tmdbAvg)}{tmdbCount ? ` • ${tmdbCount.toLocaleString()} votes` : ""}
+                    </span>
+                  );
+                }
+
+                return null;
+              })()}
             </div>
 
             {overview && <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-zinc-200">{overview}</p>}
@@ -513,6 +538,29 @@ export default function CinemaNightApp() {
     if (user) set.add(user);
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [history, user]);
+
+  // === RANKING ===
+  // Classifica globale per media voti (dense ranking: pari merito -> stessa posizione)
+  const ranking = useMemo(() => {
+    const items = history
+      .map((h) => ({ id: h.id, avg: getAverage(h?.ratings) }))
+      .filter((x) => x.avg != null) as { id: any; avg: number }[];
+
+    items.sort((a, b) => b.avg - a.avg);
+
+    const map = new Map<any, number>();
+    let prev: number | null = null;
+    let rank = 0;
+    items.forEach((it, idx) => {
+      if (prev === null || it.avg !== prev) {
+        rank = idx + 1;
+        prev = it.avg;
+      }
+      map.set(it.id, rank);
+    });
+
+    return { map, total: items.length };
+  }, [history]);
 
   // ---------- INIT + REALTIME ----------
   useEffect(() => {
@@ -1038,6 +1086,9 @@ export default function CinemaNightApp() {
                           v={v}
                           onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
                           onMetaResolved={(id, nextMovie) => updateViewingMovie(id, nextMovie)}
+                          // PASSO LA POSIZIONE IN CLASSIFICA GLOBALE
+                          rank={ranking.map.get(v.id)}
+                          total={ranking.total}
                         />
                       ))
                     );
