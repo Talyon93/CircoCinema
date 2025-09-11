@@ -5,7 +5,7 @@ import { loadSharedState } from "../state";
 import { fetchMetaForTitle, getPosterUrl } from "../TMDBHelper";
 import { sb, STORAGE_LIVE_HISTORY_KEY } from "../supabaseClient";
 // stesse helper usate dall’app
-import { downloadJSONFromStorage } from "../storage";
+import { ensureLiveFileExists, loadHistoryLive } from "../storage";
 
 type Showcase = {
   title?: string;
@@ -63,7 +63,8 @@ export function Login({ onLogin }: { onLogin: (name: string) => void }) {
       let list: any[] = [];
       try {
         if (sb) {
-          const live = await downloadJSONFromStorage(STORAGE_LIVE_HISTORY_KEY); // :contentReference[oaicite:5]{index=5}
+            await ensureLiveFileExists();
+            const live = await loadHistoryLive();
           if (Array.isArray(live)) list = live;
         }
       } catch {}

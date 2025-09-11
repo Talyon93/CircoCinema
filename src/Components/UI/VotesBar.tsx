@@ -1,18 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
-import {
-  loadAvatarFor,
-} from "../../localStorage";
-
-import {
-  formatScore,
-} from "../../Utils/Utils";
-
+import React from "react";
+import { formatScore } from "../../Utils/Utils";
 import { AvatarInline } from "./Avatar";
 
 function avgColor(score: number) {
   const s = Math.max(1, Math.min(10, score));
-  if (s <= 4) return `hsl(0 85% 50%)`;               // rosso fisso fino a 5
-  const hue = ((s - 4) / 4) * 120;                   // 5→0°, 10→120°
+  if (s <= 4) return `hsl(0 85% 50%)`; // rosso fisso fino a 4
+  const hue = ((s - 4) / 4) * 120;      // 5→0°, 10→120°
   return `hsl(${hue} 85% 50%)`;
 }
 
@@ -34,16 +27,17 @@ export function VotesBar({
   const toPct = (n: number) => ((Number(n) - 1) / 9) * 100;
   const BADGE_SHIFT = 0.5;
 
-  const trackH    = size === "sm" ? 8  : 16;
-  const tickH     = size === "sm" ? 14 : 24;
-  const avatarSz  = size === "sm" ? 18 : 22;
-  const countSz   = size === "sm" ? 14 : 16;
+  const trackH   = size === "sm" ? 8  : 16;
+  const tickH    = size === "sm" ? 14 : 24;
+  const avatarSz = size === "sm" ? 18 : 22;
+  const countSz  = size === "sm" ? 14 : 16;
 
   const ringByScore = (s: number) =>
     s >= 8 ? "ring-emerald-500/70" : s >= 6 ? "ring-amber-400/70" : "ring-rose-500/70";
 
   const ref = React.useRef<HTMLDivElement>(null);
   const [w, setW] = React.useState(0);
+
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -71,10 +65,12 @@ export function VotesBar({
     return (minPx / w) * 100;
   }, [w, avatarSz]);
 
-  type Cluster = { pct: number; people: typeof points };
+  type P = typeof points[number];
+  type Cluster = { pct: number; people: P[] };
+
   const clusters: Cluster[] = React.useMemo(() => {
     const out: Cluster[] = [];
-    let cur: typeof points = [];
+    let cur: P[] = [];
     for (const p of points) {
       if (!cur.length || Math.abs(p.pct - cur[cur.length - 1].pct) < minPct) {
         cur.push(p);
@@ -92,13 +88,13 @@ export function VotesBar({
   }, [points, minPct]);
 
   function pickRep(c: Cluster) {
-    const meIdx = currentUser ? c.people.findIndex(p => p.name === currentUser) : -1;
+    const meIdx = currentUser ? c.people.findIndex((p) => p.name === currentUser) : -1;
     if (meIdx >= 0) return c.people[meIdx];
     return c.people.slice().sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))[0];
   }
 
   return (
-    <div className="w-full">
+    <div className="relative w-full">
       {showHeader && (
         <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
           <span>Avg {entries.length ? `(${entries.length} votes)` : ""}</span>
@@ -106,49 +102,51 @@ export function VotesBar({
         </div>
       )}
 
+      {/* TRACK: barra con fill e tacche bianche */}
       <div
         ref={ref}
         className="relative w-full overflow-visible rounded-full bg-zinc-800"
         style={{ height: trackH }}
       >
         {avg !== null && (
-        <div
-          className="absolute left-0 top-0 h-full rounded-full"
-          style={{
-            width: `${toPct(avg)}%`,
-            backgroundColor: avgColor(avg),
-          }}
-        />
-      )}
+          <div
+            className="absolute left-0 top-0 z-0 h-full"
+            style={{ width: `${toPct(avg)}%`, background: avgColor(avg ?? 0) }}
+          />
+        )}
 
+        {clusters.map((c, i) => (
+          <div key={`tick-${i}`} className="absolute" style={{ left: `${c.pct}%` }}>
+            <div
+              className="absolute top-0 z-10 w-[2px] -translate-x-1/2 rounded-full bg-white/90 shadow-[0_0_0_2px_rgba(0,0,0,0.5)]"
+              style={{ height: tickH }}
+            />
+          </div>
+        ))}
+      </div>
 
+      {/* AVATAR OVERLAY: sopra la barra, no clipping; size del wrapper esplicita */}
+      <div className="pointer-events-none absolute left-0 right-0 z-30" style={{ top: -(avatarSz - 16) }}>
         {clusters.map((c, i) => {
           const rep = pickRep(c);
           const others = c.people.length - 1;
-          const left = `calc(${c.pct}% - 1px)`;
-          const ring =
-            rep.name === currentUser ? "ring-white" : ringByScore(rep.score);
-          const tooltip = c.people
-            .map(p => `${p.name} ${formatScore(p.score)}`)
-            .join(", ");
+          const ring = rep.name === currentUser ? "ring-white" : ringByScore(rep.score);
+          const tooltip = c.people.map((p) => `${p.name} ${formatScore(p.score)}`).join(", ");
 
           return (
-            <div key={i} className="absolute pointer-events-none" style={{ left }}>
-              <div
-                className="absolute top-0 w-[2px] -translate-x-1/2 rounded-full bg-white/90 shadow-[0_0_0_2px_rgba(0,0,0,0.5)]"
-                style={{ height: tickH }}
-              />
-              <div
-                className="absolute -translate-x-1/2"
-                style={{ top: -(avatarSz + 6) }}
-                title={tooltip}
-              >
+            <div
+              key={`av-${i}`}
+              className="absolute -translate-x-1/2"
+              style={{ left: `${c.pct}%` }}
+              title={tooltip}
+            >
+              <div className="relative grid place-items-center" style={{ width: avatarSz, height: avatarSz }}>
                 <AvatarInline
                   name={rep.name}
                   size={avatarSz}
+                  className="block"
                   ringClassName={`ring-2 ${ring}`}
                 />
-
                 {others > 0 && (
                   <div
                     className="absolute grid place-items-center rounded-full border border-zinc-900 bg-white text-[10px] font-bold text-zinc-900 shadow dark:bg-zinc-200"
@@ -170,7 +168,9 @@ export function VotesBar({
 
       {showScale && (
         <div className="mt-1 flex justify-between text-[11px] text-zinc-500">
-          <span>1</span><span>5</span><span>10</span>
+          <span>1</span>
+          <span>5</span>
+          <span>10</span>
         </div>
       )}
     </div>

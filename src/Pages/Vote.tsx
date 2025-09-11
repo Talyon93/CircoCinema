@@ -6,13 +6,127 @@ import { VoterChip } from "../Components/UI/VoterChip";
 import { formatScore } from "../Utils/Utils";
 import { getPosterUrl, tmdbDetails, tmdbSearch } from "../TMDBHelper";
 import { AvatarInline } from "../Components/UI/Avatar";
+import { sb } from "../supabaseClient";
+import { ensureLiveFileExists, loadHistoryLive, subscribeHistoryLive } from "../storage";
+import { K_VIEWINGS, lsGetJSON } from "../localStorage";
 
+/* ===================== Fancy, responsive slider ===================== */
+function ScoreSlider({
+  value,
+  onChange,
+  min = 1,
+  max = 10,
+  step = 0.25,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  const clamp = (n: number) => Math.min(max, Math.max(min, n));
+  const snap = (n: number) => {
+    const snapped = Math.round(n / step) * step;
+    const decimals = String(step).includes(".") ? String(step).split(".")[1].length : 0;
+    return Number(clamp(snapped).toFixed(Math.max(decimals, 2)));
+  };
+
+  const toPct = (n: number) => ((clamp(n) - min) / (max - min)) * 100;
+  const pct = toPct(value);
+  const mid = min + (max - min) / 2;
+
+  const fmt = (n: number) => {
+    try {
+      return typeof (formatScore as any) === "function"
+        ? (formatScore as any)(n)
+        : (Math.round(n * 100) / 100).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+    } catch {
+      return String(n);
+    }
+  };
+
+  const Pill = ({ children }: { children: React.ReactNode }) => (
+    <span
+      className="rounded-md px-1.5 py-[2px] text-[12px] font-semibold
+                 bg-white/90 text-gray-900 ring-1 ring-gray-300 shadow-sm
+                 dark:bg-zinc-900/85 dark:text-zinc-50 dark:ring-zinc-700"
+    >
+      {children}
+    </span>
+  );
+
+  return (
+    <div className="relative">
+      {/* Track */}
+      <div className="relative h-3 w-full rounded-full bg-zinc-800/80">
+        {/* Fill */}
+        <div
+          className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-lime-500 to-lime-400"
+          style={{ width: `${pct}%` }}
+        />
+        {/* tacche intere */}
+        {Array.from({ length: Math.floor(max - min) + 1 }, (_, i) => i + min).map((n) => (
+          <div
+            key={n}
+            className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 bg-white/35"
+            style={{ left: `calc(${toPct(n)}% - 1px)` }}
+          />
+        ))}
+      </div>
+
+      {/* Bubble + thumb visuali */}
+      <div
+        className="pointer-events-none absolute -top-12 select-none"
+        style={{ left: `calc(${pct}% - 24px)` }}
+      >
+        <div className="rounded-xl border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm font-bold text-white shadow-lg">
+          {fmt(value)}
+        </div>
+      </div>
+      <div
+        className="pointer-events-none absolute -top-[10px] grid h-8 w-8 place-items-center rounded-full bg-white text-[10px] font-bold text-zinc-900 shadow-lg"
+        style={{ left: `calc(${pct}% - 16px)` }}
+      >
+        ●
+      </div>
+
+      {/* Range reale */}
+      <input
+        aria-label="Vote slider"
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(snap(parseFloat((e.target as HTMLInputElement).value)))}
+        onInput={(e) => onChange(snap(parseFloat((e.target as HTMLInputElement).value)))}
+        className="absolute inset-0 z-10 h-8 w-full cursor-pointer appearance-none bg-transparent opacity-0"
+      />
+
+      {/* Label */}
+      <div className="mt-1.5 flex justify-between">
+        <Pill>{fmt(min)}</Pill>
+        <Pill>{fmt(mid)}</Pill>
+        <Pill>{fmt(max)}</Pill>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== Types ===================== */
 export type ActiveSession = {
   id: any;
   movie: any;
   picked_by?: string;
-  opened_by?: string;           // NEW: host della sessione
+  opened_by?: string; // host
   started_at: string;
+};
+
+type HistoryViewing = {
+  id: any;
+  movie: any;
+  ratings?: Record<string, number>;
+  avg?: number;
 };
 
 type Props = {
@@ -20,13 +134,22 @@ type Props = {
   knownUsers: string[];
   activeVote: ActiveSession | null;
   activeRatings: Record<string, number>;
-  onStartVoting: (movie: any, pickedBy: string) => void; // (l'owner lo aggiungiamo lato App)
+  onStartVoting: (movie: any, pickedBy: string) => void;
   onSendVote: (score: number) => void;
   onEndVoting: () => void;
   onCancelVoting?: () => void;
+  historyViewings?: HistoryViewing[];
 };
 
-/* =============== Search =============== */
+/* ===================== Helpers ===================== */
+function computeAvg(ratings?: Record<string, number> | null): number | null {
+  if (!ratings) return null;
+  const vals = Object.values(ratings).map(Number).filter((n) => !Number.isNaN(n));
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+/* ===================== Search ===================== */
 function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
@@ -108,7 +231,7 @@ function SearchMovie({ onPick }: { onPick: (movie: any) => void }) {
   );
 }
 
-/* =============== Who picked (enhanced) =============== */
+/* ===================== Who picked ===================== */
 function WhoPicked({
   known,
   value,
@@ -125,9 +248,7 @@ function WhoPicked({
 
   const filtered = useMemo(() => {
     const norm = q.trim().toLowerCase();
-    return known
-      .filter((n) => n.toLowerCase().includes(norm))
-      .slice(0, 12);
+    return known.filter((n) => n.toLowerCase().includes(norm)).slice(0, 12);
   }, [known, q]);
 
   return (
@@ -172,7 +293,7 @@ function WhoPicked({
   );
 }
 
-/* =============== StartVote =============== */
+/* ===================== StartVote ===================== */
 function StartVoteCard({
   movie,
   knownUsers,
@@ -235,59 +356,7 @@ function StartVoteCard({
   );
 }
 
-/* =============== Results overlay (post-chiusura) =============== */
-function ResultsOverlay({
-  movie,
-  pickedBy,
-  ratings,
-  onClose,
-}: {
-  movie: any;
-  pickedBy?: string;
-  ratings: Record<string, number>;
-  onClose: () => void;
-}) {
-  const entries = Object.entries(ratings) as [string, number][];
-  const scores = entries.map(([, v]) => Number(v));
-  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-
-  return (
-    <div className="fixed inset-0 z-[60] grid place-items-center p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-2xl rounded-3xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Session results · {movie?.title}</h3>
-          <button className="rounded-xl border border-zinc-700 px-3 py-1.5 text-sm" onClick={onClose}>
-            Close
-          </button>
-        </div>
-
-        <div className="mb-3 flex items-center gap-2">
-          {pickedBy && <PickedByBadge name={pickedBy} />}
-          {avg != null && (
-            <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-sm">
-              Avg {formatScore(avg)} · {entries.length} votes
-            </span>
-          )}
-        </div>
-
-        <div className="mb-4">
-          <VotesBar entries={entries} avg={avg} currentUser="" size="sm" showHeader={false} showScale={false} />
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {entries
-            .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
-            .map(([name, score]) => (
-              <VoterChip key={name} name={name} score={Number(score)} currentUser="" />
-            ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* =============== ActiveVoting =============== */
+/* ===================== ActiveVoting ===================== */
 function ActiveVoting({
   movie,
   pickedBy,
@@ -341,22 +410,14 @@ function ActiveVoting({
 
   const poster = movie?.poster_path ? getPosterUrl(movie.poster_path, "w342") : "";
 
-  const isOwner = openedBy && currentUser && openedBy === currentUser;
+  const normalize = (s?: string) => (s || "").trim().toLowerCase();
+  const isOwner = normalize(openedBy) === normalize(currentUser);
 
   return (
     <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 dark:border-zinc-800 dark:bg-zinc-900/60">
       <div className="mb-4 grid items-start gap-3 md:grid-cols-[auto,1fr]">
         <div className="flex items-center gap-2">
           {pickedBy && <PickedByBadge name={pickedBy} />}
-          {openedBy && (
-            <span
-              className="inline-flex items-center gap-2 rounded-full border border-sky-400/40 bg-sky-500/15 px-2.5 py-1.5 text-sky-200 ring-1 ring-sky-400/20"
-              title={`Host: ${openedBy}`}
-            >
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor"><path d="M4 4h16v4H4zm0 6h16v10H4z"/></svg>
-              <span className="text-xs font-bold">{openedBy}</span>
-            </span>
-          )}
         </div>
 
         <div>
@@ -427,7 +488,7 @@ function ActiveVoting({
                 </div>
               )}
               <div className="flex-1">
-                <VotesBar entries={entries} avg={avg} currentUser={currentUser} />
+                <VotesBar entries={Object.entries(ratings) as [string, number][]} avg={avg} currentUser={currentUser} />
               </div>
             </div>
           </div>
@@ -450,18 +511,7 @@ function ActiveVoting({
                       {formatScore(temp)}
                     </div>
                   </div>
-
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    step={0.25}
-                    value={temp}
-                    onInput={(e) => setTemp(parseFloat((e.target as HTMLInputElement).value))}
-                    onChange={(e) => setTemp(parseFloat((e.target as HTMLInputElement).value))}
-                    className="w-full"
-                  />
-
+                  <ScoreSlider value={temp} onChange={setTemp} min={1} max={10} step={0.25} />
                   <div className="mt-3 flex items-center gap-2">
                     <button
                       className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
@@ -504,19 +554,14 @@ function ActiveVoting({
               ) : (
                 <div className="mt-2 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-4">
                   <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm text-zinc-300">Edit your vote <span className="text-zinc-500">(current: {formatScore(you)})</span></div>
-                    <div className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">{formatScore(temp)}</div>
+                    <div className="text-sm text-zinc-300">
+                      Edit your vote <span className="text-zinc-500">(current: {formatScore(you)})</span>
+                    </div>
+                    <div className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
+                      {formatScore(temp)}
+                    </div>
                   </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    step={0.25}
-                    value={temp}
-                    onInput={(e) => setTemp(parseFloat((e.target as HTMLInputElement).value))}
-                    onChange={(e) => setTemp(parseFloat((e.target as HTMLInputElement).value))}
-                    className="w-full"
-                  />
+                  <ScoreSlider value={temp} onChange={setTemp} min={1} max={10} step={0.25} />
                   <div className="mt-3 flex items-center gap-2">
                     <button
                       className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
@@ -585,7 +630,148 @@ function ActiveVoting({
   );
 }
 
-/* =============== Page =============== */
+/* ===================== Closed recap (nuovo menu) ===================== */
+function ClosedRecapCard({
+  movie,
+  pickedBy,
+  ratings,
+  history,
+  onClose,
+}: {
+  movie: any;
+  pickedBy?: string;
+  ratings: Record<string, number>;
+  history?: { id: any; movie: any; ratings?: Record<string, number>; avg?: number }[];
+  onClose: () => void;
+}) {
+  const entries = Object.entries(ratings) as [string, number][];
+  const scores = entries.map(([, v]) => Number(v));
+  const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
+  const poster = movie?.poster_path ? getPosterUrl(movie.poster_path, "w342") : "";
+  const releaseYear =
+    movie?.release_year || (movie?.release_date ? String(movie.release_date).slice(0, 4) : null);
+  const genreLine = Array.isArray(movie?.genres)
+    ? movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
+    : "";
+
+  const ranking = React.useMemo(() => {
+    if (!history || avg == null) return null;
+    const items = history
+      .map((v) => {
+        const a = typeof v.avg === "number" ? v.avg : computeAvg(v.ratings || null);
+        const title = v?.movie?.title || "Untitled";
+        const year =
+          v?.movie?.release_year ||
+          (v?.movie?.release_date ? String(v.movie.release_date).slice(0, 4) : null);
+        return a != null ? { id: v.id, title, year, avg: a } : null;
+      })
+      .filter(Boolean) as { id: any; title: string; year?: string | null; avg: number }[];
+
+    const thisKey = `${(movie?.title || "").trim()}|${releaseYear || ""}`.toLowerCase();
+    if (!items.some((it) => `${it.title}|${it.year ?? ""}`.toLowerCase() === thisKey)) {
+      items.push({ id: "__current__", title: movie?.title || "Untitled", year: releaseYear, avg: avg! });
+    }
+    items.sort((a, b) => b.avg - a.avg || a.title.localeCompare(b.title));
+    const idx = items.findIndex((it) => `${it.title}|${it.year ?? ""}`.toLowerCase() === thisKey);
+    const rank = idx >= 0 ? idx + 1 : null;
+    const total = items.length;
+    return {
+      rank,
+      total,
+      prev: idx > 0 ? items[idx - 1] : null,
+      next: idx < total - 1 ? items[idx + 1] : null,
+    };
+  }, [history, avg, movie, releaseYear]);
+
+  return (
+    <Card>
+      <div className="mb-2 text-lg font-bold">La votazione è chiusa.</div>
+      <div className="grid gap-5 md:grid-cols-[176px,1fr]">
+        <div className="flex items-start justify-center">
+          {poster ? (
+            <img
+              src={poster}
+              alt={movie?.title}
+              className="h-[264px] w-[176px] rounded-2xl border border-zinc-700 object-cover"
+            />
+          ) : (
+            <div className="flex h-[264px] w-[176px] items-center justify-center rounded-2xl border border-dashed text-xs text-zinc-400">
+              No poster
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0">
+          <div className="text-xl font-bold">
+            {movie?.title} {releaseYear && <span className="ml-1 text-zinc-400">({releaseYear})</span>}
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-zinc-400">
+            {Number(movie?.runtime) > 0 && (
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">⏱ {movie.runtime} min</span>
+            )}
+            {genreLine && <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">{genreLine}</span>}
+            {typeof movie?.imdb_rating === "number" && (
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">★ IMDb {formatScore(movie.imdb_rating)}</span>
+            )}
+            {typeof movie?.tmdb_vote_count === "number" && movie.tmdb_vote_count > 0 && (
+              <span className="rounded-full border px-2 py-0.5 dark:border-zinc-700">
+                {movie.tmdb_vote_count.toLocaleString()} votes
+              </span>
+            )}
+            {pickedBy && <PickedByBadge name={pickedBy} />}
+          </div>
+
+          {movie?.overview && (
+            <p className="mt-3 whitespace-pre-wrap text-[15px] leading-relaxed text-zinc-300">{movie.overview}</p>
+          )}
+
+          <div className="mt-5 flex items-center gap-4">
+            <div className="relative h-16 w-16">
+              <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
+                <circle cx="32" cy="32" r="26" strokeWidth="8" className="fill-none stroke-zinc-800/60" />
+                <circle
+                  cx="32"
+                  cy="32"
+                  r="26"
+                  strokeWidth="8"
+                  className="fill-none stroke-lime-400"
+                  strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 26}
+                  strokeDashoffset={
+                    2 * Math.PI * 26 - ((Math.max(1, Math.min(10, avg ?? 1)) - 1) / 9) * (2 * Math.PI * 26)
+                  }
+                />
+              </svg>
+              <div className="absolute inset-0 grid place-items-center text-sm font-bold">
+                {avg != null ? formatScore(avg) : "—"}
+              </div>
+            </div>
+
+            <div className="text-sm">
+              {ranking?.rank != null ? (
+                <div className="rounded-full border border-amber-500/40 bg-amber-500/15 px-3 py-1 text-amber-200">
+                  Posizione #{ranking.rank} su {ranking.total}
+                </div>
+              ) : (
+                <div className="text-zinc-400">Nessuna classifica disponibile</div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-6">
+            <button onClick={onClose} className="rounded-xl border px-4 py-2 dark:border-zinc-700">
+              Chiudi
+            </button>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* ===================== Page ===================== */
 export default function VotePage({
   currentUser,
   knownUsers,
@@ -595,61 +781,131 @@ export default function VotePage({
   onSendVote,
   onEndVoting,
   onCancelVoting,
+  historyViewings,
 }: Props) {
   const [pickedMovie, setPickedMovie] = useState<any | null>(null);
 
-  // Cattura ultimo risultato per overlay quando la sessione si chiude (anche da remoto)
   const prevActiveRef = useRef<ActiveSession | null>(null);
-  const prevRatingsRef = useRef<Record<string, number>>({});
-  const [lastOverlay, setLastOverlay] = useState<{ movie: any; picked_by?: string; ratings: Record<string, number> } | null>(null);
-    const canceledRef = React.useRef(false);
+  const lastNonEmptyRatingsRef = useRef<Record<string, number>>({});
+  const canceledRef = React.useRef(false);
+  const [selfHistory, setSelfHistory] = useState<HistoryViewing[] | null>(null);
+  const [closedRecap, setClosedRecap] =
+    useState<{ movie: any; picked_by?: string; ratings: Record<string, number> } | null>(null);
+
 
   useEffect(() => {
-    // quando cambia, salva prev
-    prevActiveRef.current = activeVote;
-    prevRatingsRef.current = activeRatings;
-  }, [activeVote, activeRatings]);
+  if (historyViewings && Array.isArray(historyViewings)) {
+    setSelfHistory(historyViewings);
+    return;
+  }
+
+  let offLive: (() => void) | null = null;
+
+  (async () => {
+    try {
+      if (sb) {
+        await ensureLiveFileExists();
+        const live = await loadHistoryLive();
+        setSelfHistory(Array.isArray(live) ? live : []);
+        offLive = subscribeHistoryLive((next) =>
+          setSelfHistory(Array.isArray(next) ? next : [])
+        );
+      } else {
+        // Fallback offline: localStorage + listener
+        const hist = lsGetJSON<HistoryViewing[]>(K_VIEWINGS, []);
+        setSelfHistory(Array.isArray(hist) ? hist : []);
+
+        const onStorage = (e: StorageEvent) => {
+          if (e.key === K_VIEWINGS) {
+            const curr = lsGetJSON<HistoryViewing[]>(K_VIEWINGS, []);
+            setSelfHistory(Array.isArray(curr) ? curr : []);
+          }
+        };
+        window.addEventListener("storage", onStorage);
+        offLive = () => window.removeEventListener("storage", onStorage);
+      }
+    } catch {
+      // se qualcosa va storto, non rompiamo l'UI
+      setSelfHistory([]);
+    }
+  })();
+
+  return () => {
+    if (offLive) offLive();
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [historyViewings]);
+
+  // salva l'ULTIMA sessione attiva (non sovrascrivere con null)
+  useEffect(() => {
+    if (activeVote?.movie) {
+      prevActiveRef.current = activeVote;
+    }
+  }, [activeVote]);
+
 
   useEffect(() => {
-    if (!activeVote && prevActiveRef.current?.movie) 
-        {
-            if (canceledRef.current) {
-            // CANCEL → niente overlay e torna alla ricerca
-            canceledRef.current = false;
-            setLastOverlay(null);
-            setPickedMovie(null);
-            return;
-            }
-            // END → mostra overlay risultati
-            setLastOverlay({
-            movie: prevActiveRef.current.movie,
-            picked_by: prevActiveRef.current.picked_by,
-            ratings: prevRatingsRef.current,
-            });
-        }
-    }, [activeVote]);
+    if (activeRatings && Object.keys(activeRatings).length > 0) {
+      lastNonEmptyRatingsRef.current = activeRatings;
+    }
+  }, [activeRatings]);
+    // reagisce alla chiusura
+ useEffect(() => {
+  if (activeVote !== null) return;             // esegue solo alla chiusura
+  if (!prevActiveRef.current?.movie) return;
+
+  if (canceledRef.current) {
+    canceledRef.current = false;
+    setClosedRecap(null);
+    setPickedMovie(null);
+    return;
+  }
+
+  // ⬇️ usa l'ultima versione NON vuota salvata prima che il parent azzeri i ratings
+  const snapshot = lastNonEmptyRatingsRef.current;
+
+  setClosedRecap({
+    movie: prevActiveRef.current.movie,
+    picked_by: prevActiveRef.current.picked_by,
+    ratings: snapshot,
+  });
+  setPickedMovie(null);
+}, [activeVote]);
 
   const pickHandler = async (res: any) => {
     setPickedMovie(res || null);
   };
 
-    if (activeVote?.movie) {
+  if (activeVote?.movie) {
     return (
-        <ActiveVoting
+      <ActiveVoting
         movie={activeVote.movie}
         pickedBy={activeVote.picked_by}
+        openedBy={activeVote.opened_by ?? (activeVote as any).openedBy}
         currentUser={currentUser}
         ratings={activeRatings}
         onSendVote={onSendVote}
         onEnd={onEndVoting}
         onCancel={() => {
-            canceledRef.current = true;
-            setPickedMovie(null);
-            onCancelVoting?.();
+          canceledRef.current = true;
+          setPickedMovie(null);
+          onCancelVoting?.();
         }}
-        />
+      />
     );
-    }
+  }
+
+  if (closedRecap) {
+    return (
+      <ClosedRecapCard
+        movie={closedRecap.movie}
+        pickedBy={closedRecap.picked_by}
+        ratings={closedRecap.ratings}
+        history={historyViewings ?? selfHistory ?? []}
+        onClose={() => setClosedRecap(null)}
+      />
+    );
+  }
 
   return (
     <div className="grid gap-4">
@@ -661,14 +917,6 @@ export default function VotePage({
           knownUsers={knownUsers}
           currentUser={currentUser}
           onStartVoting={onStartVoting}
-        />
-      )}
-      {lastOverlay && (
-        <ResultsOverlay
-          movie={lastOverlay.movie}
-          pickedBy={lastOverlay.picked_by}
-          ratings={lastOverlay.ratings}
-          onClose={() => setLastOverlay(null)}
         />
       )}
     </div>

@@ -11,8 +11,6 @@ export const SB_ROW_ID = "singleton" as const;
 
 /** Storage bucket + keys */
 export const STORAGE_BUCKET = "circo";
-/** Seed (read-only) */
-export const STORAGE_BASE_HISTORY_KEY = "history.json";
 /** Live file we write to */
 export const STORAGE_LIVE_HISTORY_KEY = "history_live.json";
 

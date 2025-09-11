@@ -1,11 +1,11 @@
 import React from "react";
-import { loadAvatarFor } from "../../localStorage";
+import { fetchAvatarUrl } from "../../AvatarStorage";
 
 type BaseProps = {
   name: string;
-  size?: number;         // px
-  className?: string;    // class extra
-  ringClassName?: string;// class per ring (es: colore)
+  size?: number;
+  className?: string;
+  ringClassName?: string;
   alt?: string;
 };
 
@@ -18,9 +18,15 @@ function initialsFrom(name: string) {
     .join("") || "?";
 }
 
-/** Avatar tondo generico (foto se presente, altrimenti iniziali) */
 export function Avatar({ name, size = 32, className = "", ringClassName = "", alt }: BaseProps) {
-  const src = loadAvatarFor(name);
+  const [src, setSrc] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    fetchAvatarUrl(name).then((u) => alive && setSrc(u));
+    return () => { alive = false; };
+  }, [name]);
+
   const style = { width: size, height: size };
 
   if (src) {
@@ -29,16 +35,18 @@ export function Avatar({ name, size = 32, className = "", ringClassName = "", al
         src={src}
         alt={alt || name}
         className={`rounded-full object-cover ${ringClassName} ${className}`}
-        style={style}
+        style={{ width: size, height: size }}
+        onError={() => setSrc(null)} // se l'URL scade/404, fallback
       />
     );
   }
+
   return (
     <div
       className={`grid place-items-center rounded-full 
-              bg-gray-200 text-xs font-semibold text-zinc-900
-              dark:bg-zinc-800 dark:text-white 
-              ${ringClassName} ${className}`}
+                  bg-gray-200 text-xs font-semibold text-zinc-900
+                  dark:bg-zinc-800 dark:text-white
+                  ${ringClassName} ${className}`}
       style={style}
       aria-label={alt || name}
       title={name}
@@ -48,17 +56,10 @@ export function Avatar({ name, size = 32, className = "", ringClassName = "", al
   );
 }
 
-/** Variante “inline” identica a Avatar, lasciata per compatibilità */
-export function AvatarInline(props: BaseProps) {
-  return <Avatar {...props} />;
-}
+export function AvatarInline(props: BaseProps) { return <Avatar {...props} />; }
 
-/** Avatar piccolo con ring colorato in base allo score (per chip/list) */
 export function ChipAvatar({
-  name,
-  score,
-  size = 20,
-  className = "",
+  name, score, size = 20, className = "",
 }: { name: string; score: number; size?: number; className?: string }) {
   const ring =
     score >= 8 ? "ring-emerald-500/60" :

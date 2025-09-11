@@ -117,17 +117,8 @@ export function Header({
           <TabBtn k="stats" label="Stats" />
         </nav>
 
-        {/* RIGHT: theme + avatar menu */}
+        {/* RIGHT: avatar menu (theme toggle moved here) */}
         <div className="ml-auto flex items-center gap-2">
-          <button
-            aria-label="Toggle theme"
-            title={theme === "dark" ? "Switch to Light" : "Switch to Dark"}
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            className="rounded-2xl border border-zinc-300/60 bg-white/60 px-3 py-2 text-base transition hover:bg-white dark:border-zinc-700 dark:bg-zinc-900/70 dark:hover:bg-zinc-900"
-          >
-            {theme === "dark" ? "🌙" : "☀️"}
-          </button>
-
           <div className="relative" ref={menuRef}>
             <button
               onClick={() => setOpen((s) => !s)}
@@ -143,7 +134,7 @@ export function Header({
             {open && (
               <div
                 role="menu"
-                className="absolute right-0 mt-2 w-52 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+                className="absolute right-0 mt-2 w-56 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
               >
                 <div className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
                   Signed in as{" "}
@@ -151,6 +142,26 @@ export function Header({
                     {user}
                   </span>
                 </div>
+
+                {/* Theme toggle inside menu */}
+                <div className="flex items-center justify-between px-3 py-2">
+                  <span className="text-sm text-zinc-700 dark:text-zinc-300">
+                    Theme
+                  </span>
+                  <button
+                    onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                    className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-sm hover:bg-zinc-50 active:scale-[0.99] dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-800/70"
+                    title={theme === "dark" ? "Switch to Light" : "Switch to Dark"}
+                  >
+                    <span aria-hidden>{theme === "dark" ? "🌙" : "☀️"}</span>
+                    <span className="min-w-[3.5rem] text-zinc-800 dark:text-zinc-100">
+                      {theme === "dark" ? "Dark" : "Light"}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="my-1 h-px bg-zinc-200 dark:bg-zinc-700" />
+
                 <button
                   role="menuitem"
                   onClick={() => {
@@ -162,7 +173,9 @@ export function Header({
                 >
                   Profile
                 </button>
+
                 <div className="my-1 h-px bg-zinc-200 dark:bg-zinc-700" />
+
                 <button
                   role="menuitem"
                   onClick={() => {
@@ -181,7 +194,7 @@ export function Header({
 
       {/* Mobile: badge left, tabs under */}
       <div className="mx-auto block max-w-6xl px-3 pb-3 md:hidden">
-        <div className="mb-2 flex">{/* left aligned on mobile too */}
+        <div className="mb-2 flex">
           <NowShowingBadge />
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2">
