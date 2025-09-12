@@ -12,6 +12,8 @@ import {
   ensureRuntime,
   ensureGenres,
   getPosterUrl,
+  pickPrimaryCountryISO2,
+  normalizeSingleCountry
 } from "./TMDBHelper";
 
 // Supabase
@@ -624,6 +626,8 @@ export default function CinemaNightApp() {
   }, []);
 
   // ---------- BACKFILLS ----------
+
+  
   const backfillHistoryGenres = async () => {
     if (isBackfilling) return;
     setIsBackfilling(true);
@@ -654,54 +658,68 @@ export default function CinemaNightApp() {
       setIsBackfilling(false);
     }
   };
+const backfillRatingsMeta = async () => {
+  if (isBackfillingRatings) return;
+  setIsBackfillingRatings(true);
+  try {
+    const list = history.slice();
+    let changed = false;
 
-  const backfillRatingsMeta = async () => {
-    if (isBackfillingRatings) return;
-    setIsBackfillingRatings(true);
-    try {
-      const list = history.slice();
-      let changed = false;
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      let m = { ...(v?.movie || {}) };
 
-      for (let i = 0; i < list.length; i++) {
-        const v = list[i];
-        let m = { ...(v?.movie || {}) };
-
-        let det: any = null;
-        if (m?.id) det = await tmdbDetails(m.id);
-        else if (m?.title) {
-          const s = await tmdbSearch(m.title);
-          const first = s?.[0];
-          if (first?.id) det = await tmdbDetails(first.id);
-        }
-        if (det) m = mergeMovie(m, det);
-
-        if (!m?.release_year && m?.release_date) m.release_year = String(m.release_date).slice(0, 4);
-
-        const needImdb = m?.imdb_id && (m.imdb_rating == null || m.imdb_votes == null);
-        if (needImdb) {
-          const om = await omdbRatingFromImdbId(m.imdb_id);
-          if (om) m = { ...m, ...om };
-        }
-
-        if (JSON.stringify(m) !== JSON.stringify(v.movie)) {
-          list[i] = { ...v, movie: m };
-          changed = true;
-        }
-
-        await sleep(220);
+      // TMDB details (by id or search)
+      let det: any = null;
+      if (m?.id) det = await tmdbDetails(m.id);
+      else if (m?.title) {
+        const s = await tmdbSearch(m.title);
+        const first = s?.[0];
+        if (first?.id) det = await tmdbDetails(first.id);
+      }
+      if (det) {
+        m = mergeMovie(m, det);
+        if (Array.isArray(det.production_countries)) m.production_countries = det.production_countries;
+        if (Array.isArray(det.origin_country))       m.origin_country       = det.origin_country;
       }
 
-      if (changed) {
-        setHistory(list);
-        await persistHistoryLive(list);
+      if (!m?.release_year && m?.release_date) m.release_year = String(m.release_date).slice(0, 4);
+
+      // OMDb ratings + Country se serve
+      const needImdbRating = m?.imdb_id && (m.imdb_rating == null || m.imdb_votes == null);
+      const needOmdbCountry = m?.imdb_id && !(m?.omdb?.Country);
+      if (m?.imdb_id && (needImdbRating || needOmdbCountry)) {
+        const om = await omdbRatingFromImdbId(m.imdb_id);
+        if (om) m = { ...m, ...om };
       }
-    } catch (e) {
-      console.error("[backfillRatingsMeta] failed:", e);
-      alert("Errore durante il backfill dei rating (vedi console).");
-    } finally {
-      setIsBackfillingRatings(false);
+      if (m?.Country && !m?.omdb?.Country) {
+        m.omdb = { ...(m.omdb || {}), Country: m.Country };
+        delete (m as any).Country;
+      }
+
+      // === tieni SOLO primary_country ===
+      m = normalizeSingleCountry(m);
+
+      if (JSON.stringify(m) !== JSON.stringify(v.movie)) {
+        list[i] = { ...v, movie: m };
+        changed = true;
+      }
+
+      await sleep(220);
     }
-  };
+
+    if (changed) {
+      setHistory(list);
+      await persistHistoryLive(list);
+    }
+  } catch (e) {
+    console.error("[backfillRatingsMeta] failed:", e);
+    alert("Errore durante il backfill dei rating (vedi console).");
+  } finally {
+    setIsBackfillingRatings(false);
+  }
+};
+
 
   const backfillHistoryRuntime = async () => {
     if (isBackfillingRuntime) return;
@@ -804,24 +822,37 @@ export default function CinemaNightApp() {
     setPickedMovie(details || res);
   };
 
-  const startVoting = async (movie: any, pickedBy: string) => {
-    const movieWithGenres = await ensureGenres(movie);
-    const session = {
-      id: Date.now(),
-      movie: { ...movieWithGenres, genres: Array.isArray(movieWithGenres?.genres) ? movieWithGenres.genres : [] },
-      picked_by: pickedBy,
-      opened_by: user,
-      started_at: new Date().toISOString(),
-    };
-    setActiveVote(session);
-    setActiveRatings({});
-    if (sb) {
-      await saveSharedState({ active: session, ratings: {} });
-    } else {
-      lsSetJSON(K_ACTIVE_VOTE, session);
-      lsSetJSON(K_ACTIVE_RATINGS, {});
-    }
+const startVoting = async (movie: any, pickedBy: string) => {
+  const movieWithGenres = await ensureGenres(movie);
+
+  // prova TMDB details per arricchire prima di salvare
+  let det: any = null;
+  if (movieWithGenres?.id) {
+    try { det = await tmdbDetails(movieWithGenres.id); } catch {}
+  }
+
+  let m = det ? mergeMovie(movieWithGenres, det) : movieWithGenres;
+  if (Array.isArray(det?.production_countries)) m.production_countries = det.production_countries;
+  if (Array.isArray(det?.origin_country))       m.origin_country       = det.origin_country;
+
+  m = normalizeSingleCountry(m); // <— salva solo primary_country
+
+  const session = {
+    id: Date.now(),
+    movie: { ...m, genres: Array.isArray(m?.genres) ? m.genres : [] },
+    picked_by: pickedBy,
+    opened_by: user,
+    started_at: new Date().toISOString(),
   };
+
+  setActiveVote(session);
+  setActiveRatings({});
+  if (sb) await saveSharedState({ active: session, ratings: {} });
+  else {
+    lsSetJSON(K_ACTIVE_VOTE, session);
+    lsSetJSON(K_ACTIVE_RATINGS, {});
+  }
+};
 
   const sendVote = async (score: number) => {
     if (!user || !activeVote) return;
@@ -1158,3 +1189,4 @@ export default function CinemaNightApp() {
     </div>
   );
 }
+

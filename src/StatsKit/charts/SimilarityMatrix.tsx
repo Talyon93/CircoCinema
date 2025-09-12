@@ -36,7 +36,7 @@ export function SimilarityMatrix({ users, cells }: Props){
   // padding dinamico: spazio per le labels
   const longest = users.reduce((m,u)=> Math.max(m, u.length), 0);
   const padL = clamp(12 + longest*7.2, 80, 160);   // sinistra per labels riga
-  const padT = 54;                                 // top per labels colonna
+  const padT = clamp(16 + longest*7.2, 80, 220);   // TOP per labels colonna (verticali)
   const padR = 12, padB = 18;
 
   // cell responsive
@@ -59,17 +59,18 @@ export function SimilarityMatrix({ users, cells }: Props){
   return (
     <div ref={ref} className="relative w-full">
       <svg width={W} height={H} className="block">
-        {/* Col labels ruotate */}
+       {/* Col labels verticali (−90°) */}
         {users.map((u, idx) => {
           const x = padL + idx*cell + cell/2;
-          const y = 12;
+          const y = padT - 60; // ⬅️ aumenta il valore negativo per alzarli ancora di più
           return (
             <text
               key={`col-${idx}`}
               x={x}
               y={y}
-              transform={`rotate(-45 ${x} ${y})`}
+              transform={`rotate(-90 ${x} ${y})`}
               textAnchor="end"
+              dominantBaseline="central"
               className={`fill-current text-[11px] ${over && over.cj===idx ? "opacity-100" : "opacity-80"}`}
             >
               {u}

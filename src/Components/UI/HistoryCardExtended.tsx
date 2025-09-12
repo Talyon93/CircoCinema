@@ -1,12 +1,8 @@
 import React from "react";
 import {
   tmdbDetails,
-  tmdbSearch,
   omdbRatingFromImdbId,
-  mergeMovie,
   fetchMetaForTitle,
-  ensureRuntime,
-  ensureGenres,
   getPosterUrl,
 } from "../../TMDBHelper";
 import { Calendar, Timer, Film, Star, Trophy, Play, Tv } from "lucide-react";
@@ -20,6 +16,93 @@ import { PickedByBadge } from "./PickedByBadge";
 import { VoterChip } from "./VoterChip";
 import { formatScore } from "../../Utils/Utils";
 import { SiImdb } from "react-icons/si";
+
+
+// ==== Country helpers (estrazione + fallback + normalizzazione bandiere) ====
+// Ritorna un ISO2 (es. "US") usando priorità: TMDB -> OMDb -> companies -> lingua
+
+function isoFromNameOrCode(s: string): string | null {
+  const t = s.trim();
+  const up = t.toUpperCase();
+  // mappa rapida nomi comuni -> ISO2
+  const map: Record<string, string> = {
+    USA: "US", "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US",
+    UK: "GB", "UNITED KINGDOM": "GB",
+    ITALY: "IT", FRANCE: "FR", GERMANY: "DE", SPAIN: "ES", CANADA: "CA",
+    JAPAN: "JP", CHINA: "CN", INDIA: "IN", AUSTRALIA: "AU", BRAZIL: "BR",
+    MEXICO: "MX", "SOUTH KOREA": "KR", "REPUBLIC OF KOREA": "KR", KOREA: "KR",
+    RUSSIA: "RU" , CZECHIA: "CZ", "CZECH REPUBLIC": "CZ", "HONG KONG": "HK",
+    TAIWAN: "TW", IRELAND: "IE", "NEW ZEALAND": "NZ", SWEDEN: "SE",
+    NORWAY: "NO", DENMARK: "DK", NETHERLANDS: "NL", BELGIUM: "BE",
+    SWITZERLAND: "CH", AUSTRIA: "AT", POLAND: "PL", TURKEY: "TR",
+    "UNITED ARAB EMIRATES": "AE", 
+  };
+  if (/^[A-Z]{2}$/.test(up)) return up; // ISO2
+  if (/^[A-Z]{3}$/.test(up)) {
+    // pochi comuni ISO3
+    const iso3: Record<string,string> = { USA:"US", GBR:"GB", ITA:"IT", FRA:"FR", DEU:"DE", ESP:"ES", CAN:"CA", JPN:"JP", CHN:"CN", KOR:"KR", RUS:"RU" };
+    return iso3[up] || null;
+  }
+  return map[up] || null;
+}
+
+function uniquePreserve<T>(arr: T[], keyFn: (x:T)=>string) {
+  const out: T[] = []; const seen = new Set<string>();
+  for (const v of arr) { const k = keyFn(v); if (!seen.has(k)) { seen.add(k); out.push(v); } }
+  return out;
+}
+
+function extractCountries(viewing: any): string[] {
+  const m = viewing?.movie || viewing || {};
+  const out: string[] = [];
+
+  // 1) TMDB production_countries
+  if (Array.isArray(m.production_countries)) {
+    for (const c of m.production_countries) {
+      const iso = isoFromNameOrCode(String(c?.iso_3166_1 || c?.name || ""));
+      if (iso) out.push(iso);
+    }
+  }
+
+  // 2) TMDB origin_country
+  if (Array.isArray(m.origin_country)) {
+    for (const code of m.origin_country) {
+      const iso = isoFromNameOrCode(String(code));
+      if (iso) out.push(iso);
+    }
+  }
+
+  // 3) OMDb Country come stringa "USA, UK, Italy"
+  const omdbCountry = m?.omdb?.Country || viewing?.omdb?.Country || m?.Country;
+  if (typeof omdbCountry === "string" && omdbCountry.trim()) {
+    for (const part of omdbCountry.split(/[;,]|\/|\|/)) {
+      const iso = isoFromNameOrCode(part.trim());
+      if (iso) out.push(iso);
+    }
+  }
+
+  // 4) Fallback: company origin_country
+  if (Array.isArray(m.production_companies)) {
+    for (const c of m.production_companies) {
+      const iso = isoFromNameOrCode(String(c?.origin_country || ""));
+      if (iso) out.push(iso);
+    }
+  }
+
+  // 5) Fallback: lingua originale (mapping soft)
+  if (!out.length && typeof m.original_language === "string") {
+    const ol = m.original_language.toLowerCase();
+    const map: Record<string,string> = {
+      en:"US", it:"IT", fr:"FR", de:"DE", es:"ES", pt:"PT", ja:"JP", ko:"KR", zh:"CN", ru:"RU",
+      cs:"CZ", sv:"SE", no:"NO", da:"DK", nl:"NL", pl:"PL", tr:"TR", hi:"IN"
+    };
+    if (map[ol]) out.push(map[ol]);
+  }
+
+  // dedupe e limita a 4 bandiere
+  return uniquePreserve(out.map(x => x.toUpperCase()), x => x).slice(0,1);
+}
+
 
 export function HistoryCardExtended({
   v,
@@ -196,6 +279,56 @@ React.useEffect(() => {
 }, [v?.movie?.tmdb_id, v?.movie?.id, v?.movie?.media_type]);
 
 
+const [countries, setCountries] = React.useState<string[]>(() => extractCountries(v));
+
+React.useEffect(() => {
+  setCountries(extractCountries(v));
+}, [v?.id, v?.movie]);
+
+React.useEffect(() => {
+  if (countries.length) return; // abbiamo già qualcosa
+
+  (async () => {
+    let changed = false;
+    let m = { ...(v?.movie || {}) };
+
+    // Prova TMDB details se abbiamo id
+    const tmdbId = (m?.tmdb_id || m?.id) as number | undefined;
+    try {
+      if (tmdbId) {
+        const det = await tmdbDetails(tmdbId);
+        if (det?.production_countries && !m.production_countries) {
+          m.production_countries = det.production_countries;
+          changed = true;
+        }
+        if (Array.isArray(det?.origin_country) && !m.origin_country) {
+          m.origin_country = det.origin_country;
+          changed = true;
+        }
+      }
+    } catch {}
+
+    // Prova OMDb se abbiamo imdb_id
+    try {
+      if (m?.imdb_id && !(m?.omdb?.Country)) {
+        const om = await omdbRatingFromImdbId(m.imdb_id);
+        if (om?.Country) {
+          m = { ...m, omdb: { ...(m.omdb || {}), Country: om.Country } };
+          changed = true;
+        }
+      }
+    } catch {}
+
+    if (changed) {
+      setCountries(extractCountries({ movie: m }));
+      // persisti nel parent se possibile
+      onMetaResolved?.(v.id, m);
+    }
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [countries.length, v?.id]);
+
+
   React.useEffect(() => {
     const tmdbId = (v?.movie?.tmdb_id || v?.movie?.id) as number | undefined;
     const apiKey = (import.meta as any)?.env?.VITE_TMDB_API_KEY;
@@ -340,6 +473,38 @@ React.useEffect(() => {
                 {genreLine}
               </span>
             )}
+
+{/* Country (una bandiera dal JSON) */}
+{v?.movie?.primary_country && (
+  <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+    <img
+      src={`https://flagcdn.com/24x18/${String(v.movie.primary_country).toLowerCase()}.png`}
+      alt={v.movie.primary_country}
+      title={v.movie.primary_country}
+      className="h-3.5 w-5 rounded-sm shadow-sm"
+      loading="lazy"
+    />
+  </span>
+)}
+{/* fallback se ci sono solo origin_country */}
+{(!v?.movie?.production_countries?.length &&
+  Array.isArray(v?.movie?.origin_country) &&
+  v.movie.origin_country.length > 0) && (
+  (() => {
+    const code = (v.movie.origin_country[0] || "").toLowerCase();
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+        <img
+          src={`https://flagcdn.com/24x18/${code}.png`}
+          alt={code}
+          title={code}
+          className="h-3.5 w-5 rounded-sm shadow-sm"
+          loading="lazy"
+        />
+      </span>
+    );
+  })()
+)}
 
             {/* Rating + votes (un unico badge) */}
             {(() => {

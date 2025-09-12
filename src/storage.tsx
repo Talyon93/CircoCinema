@@ -34,8 +34,16 @@ export async function loadHistoryLive(): Promise<Viewings> {
 }
 
 export async function persistHistoryLive(viewings: any[]): Promise<void> {
+  // ✅ Evita di salvare se l'array è vuoto o troppo piccolo
+  if (!Array.isArray(viewings) || viewings.length < 2) {
+    console.warn("⚠️ persistHistoryLive: tentato salvataggio vuoto o troppo piccolo, skip.");
+    return;
+  }
+
   const blob = new Blob([JSON.stringify(viewings, null, 2)], { type: "application/json" });
-  await sb.storage.from(STORAGE_BUCKET).upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true });
+  await sb.storage
+    .from(STORAGE_BUCKET)
+    .upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true });
 
   const state = await loadSharedState();
   const nextRev = Number((state as any)?.history_live_rev || 0) + 1;

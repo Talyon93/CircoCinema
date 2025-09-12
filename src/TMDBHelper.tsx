@@ -1,5 +1,6 @@
 const TMDB_API_KEY = "99cb7c79bbe966a91a2ffcb7a3ea3d37";
 const OMDB_API_KEY = "c71ea1b7";
+const OMDB_URL = "https://www.omdbapi.com/";
 
 export async function tmdbSearch(query: string) {
   const q = (query || "").trim();
@@ -29,23 +30,27 @@ export async function tmdbDetails(tmdbId: number) {
 }
 
 export async function omdbRatingFromImdbId(imdbId: string) {
-  try {
-    if (!OMDB_API_KEY || !imdbId) return null;
-    const res = await fetch(`https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${imdbId}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data?.Response !== "True") return null;
+  if (!imdbId) return null;
+
+  const url = `${OMDB_URL}?apikey=${OMDB_API_KEY}&i=${encodeURIComponent(imdbId)}&plot=short&r=json`;
+  const res = await fetch(url).then(r => r.json()).catch(() => null);
+  if (!res || res.Response === "False") return null;
+
+  const imdb_rating = Number(res.imdbRating);
+  const imdb_votes = typeof res.imdbVotes === "string" ? Number(res.imdbVotes.replace(/,/g, "")) : null;
+
+  // ✚ questa è la riga importante: porta su la country di OMDb
+  const Country = typeof res.Country === "string" ? res.Country : undefined; // es: "USA, Canada"
+
     return {
-      imdb_rating: data.imdbRating !== "N/A" ? parseFloat(data.imdbRating) : null,
-      imdb_votes:
-        data.imdbVotes && data.imdbVotes !== "N/A"
-          ? parseInt(String(data.imdbVotes).replace(/,/g, ""), 10)
-          : null,
-    };
-  } catch {
-    return null;
-  }
+    imdb_id: imdbId,
+    imdb_rating: Number.isFinite(imdb_rating) ? imdb_rating : null,
+    imdb_votes: Number.isFinite(imdb_votes) ? imdb_votes : null,
+    omdb: { Country: typeof res.Country === "string" ? res.Country : undefined },
+    Country: res.Country, // flat compat (verrà ripulito)
+  };
 }
+
 
 export async function fetchMetaForTitle(title: string): Promise<{ poster_path?: string; overview?: string } | null> {
   const q = (title || "").trim();
@@ -96,6 +101,68 @@ export function mergeMovie(base: any, det: any) {
         : base?.tmdb_vote_count,
     imdb_id: det?.external_ids?.imdb_id ?? base?.imdb_id,
   };
+}
+
+
+// === COUNTRY: scegli 1 ISO2 principale da vari campi (TMDB/OMDb/companies/lang) ===
+export function pickPrimaryCountryISO2(m: any): string | null {
+  if (!m) return null;
+
+  // 1) TMDB production_countries
+  let code: string | null =
+    (m?.production_countries?.[0]?.iso_3166_1 as string | undefined) || null;
+
+  // 2) TMDB origin_country
+  if (!code && Array.isArray(m?.origin_country) && m.origin_country.length > 0) {
+    code = String(m.origin_country[0]);
+  }
+
+  // 3) OMDb Country: "USA, Canada" -> prendi il primo e mappa
+  if (!code && typeof m?.omdb?.Country === "string" && m.omdb.Country.trim()) {
+    const first = m.omdb.Country.split(/[;,]|\/|\|/)[0].trim();
+    const map: Record<string, string> = {
+        USA: "US", "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US",
+        UK: "GB", "UNITED KINGDOM": "GB",
+        CANADA: "CA", ITALY: "IT", FRANCE: "FR", GERMANY: "DE", SPAIN: "ES",
+        JAPAN: "JP", CHINA: "CN",
+        "SOUTH KOREA": "KR", "REPUBLIC OF KOREA": "KR",
+        RUSSIA: "RU", "RUSSIAN FEDERATION": "RU",
+        "SOVIET UNION": "RU", SU: "RU",        // 👈 fix URSS
+        "CZECH REPUBLIC": "CZ", CZECHIA: "CZ",
+        "HONG KONG": "HK", TAIWAN: "TW",
+        MEXICO: "MX", BRAZIL: "BR", IRELAND: "IE", AUSTRALIA: "AU"
+      };
+    const up = first.toUpperCase();
+    code = /^[A-Z]{2}$/.test(up) ? up : (map[up] || null);
+  }
+
+  // 4) Fallback: prima production company con origin_country
+  if (!code && Array.isArray(m?.production_companies)) {
+    const pc = m.production_companies.find((x: any) => x?.origin_country);
+    if (pc?.origin_country) code = String(pc.origin_country);
+  }
+
+  // 5) Fallback: lingua originale -> paese tipico
+  if (!code && typeof m?.original_language === "string") {
+    const mapLang: Record<string, string> = {
+      en:"US",it:"IT",fr:"FR",de:"DE",es:"ES",pt:"PT",ja:"JP",ko:"KR",zh:"CN",ru:"RU",
+      cs:"CZ",sv:"SE",no:"NO",da:"DK",nl:"NL",pl:"PL",tr:"TR",hi:"IN"
+    };
+    code = mapLang[m.original_language.toLowerCase()] || null;
+  }
+
+  return code ? code.toUpperCase() : null;
+}
+
+// === NORMALIZZA: tieni solo primary_country nel movie ===
+export function normalizeSingleCountry(m: any): any {
+  if (!m) return m;
+  const iso = pickPrimaryCountryISO2(m);
+  if (iso) m.primary_country = iso;
+  delete (m as any).production_countries;
+  delete (m as any).origin_country;
+  if (m.omdb && "Country" in m.omdb) delete (m.omdb as any).Country;
+  return m;
 }
 
 
