@@ -21,6 +21,7 @@ export function Header({
 }) {
   const [open, setOpen] = React.useState(false);
   const [hasActiveVote, setHasActiveVote] = React.useState(false);
+  const [nowTitle, setNowTitle] = React.useState<string | null>(null);
   const menuRef = React.useRef<HTMLDivElement | null>(null);
 
   // Imposta Archive come tab iniziale se non salvato
@@ -35,14 +36,20 @@ export function Header({
 
     (async () => {
       try {
-        const s = await loadSharedState();
+        const s = (await loadSharedState()) as SharedState | null;
         if (!mounted) return;
         setHasActiveVote(Boolean(s?.active?.movie));
-      } catch {}
+        setNowTitle(s?.active?.movie?.title ?? null);
+      } catch {
+        if (!mounted) return;
+        setHasActiveVote(false);
+        setNowTitle(null);
+      }
     })();
 
     const unsub = subscribeSharedState?.((s: SharedState) => {
       setHasActiveVote(Boolean(s?.active?.movie));
+      setNowTitle(s?.active?.movie?.title ?? null);
     });
 
     return () => {
@@ -65,7 +72,7 @@ export function Header({
     };
   }, []);
 
-  // Tab generica con lineetta bianca
+  // Tab generica con lineetta bianca full width
   const TabBtn = ({ k, label }: { k: TabKey; label: string }) => {
     const active = tab === k;
     return (
@@ -75,6 +82,7 @@ export function Header({
           localStorage.setItem("CN_TAB", k);
         }}
         aria-current={active ? "page" : undefined}
+        aria-selected={active}
         className={[
           "relative flex flex-col items-center justify-center px-5 md:px-6 py-2.5 md:py-3",
           "text-base md:text-lg font-semibold tracking-wide transition",
@@ -83,23 +91,21 @@ export function Header({
         ].join(" ")}
       >
         {label}
-        {active && (
-          <span
-            aria-hidden
-            className="absolute -bottom-1.5 h-1 w-8 rounded-full bg-white -translate-y-[15px]"
-          />
-        )}
+        <span
+          aria-hidden
+          className={`absolute left-0 bottom-0 h-[2px] w-full rounded ${active ? "bg-white" : "bg-transparent"}`}
+        />
       </button>
     );
   };
 
-  const voteLabel = hasActiveVote ? "Vote" : "Start Vote";
+  const voteLabel = hasActiveVote ? "Vote" : "Start vote";
 
   const NowShowingBadge = () =>
-    !hasActiveVote ? null : (
+    !hasActiveVote || !nowTitle ? null : (
       <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-wide text-white/90 backdrop-blur">
         <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-rose-400" />
-        Now Showing
+        <span className="truncate">Now showing: {nowTitle}</span>
       </div>
     );
 
@@ -119,10 +125,7 @@ export function Header({
         </div>
 
         {/* CENTER: tabs */}
-        <nav
-          className="flex items-center justify-center gap-3 md:gap-6"
-          aria-label="Primary"
-        >
+        <nav className="flex items-center justify-center gap-3 md:gap-6" aria-label="Primary">
           <TabBtn k="history" label="Archive" />
           <TabBtn k="vote" label={voteLabel} />
           <TabBtn k="stats" label="Stats" />
@@ -178,6 +181,7 @@ export function Header({
                 <button
                   role="menuitem"
                   onClick={() => {
+                    // opzionale: se hai una tab "profile"
                     // @ts-ignore
                     setTab?.("profile");
                     setOpen(false);

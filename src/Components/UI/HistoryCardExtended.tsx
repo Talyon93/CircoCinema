@@ -19,6 +19,7 @@ import { VotesBar } from "./VotesBar";
 import { PickedByBadge } from "./PickedByBadge";
 import { VoterChip } from "./VoterChip";
 import { formatScore } from "../../Utils/Utils";
+import { SiImdb } from "react-icons/si";
 
 export function HistoryCardExtended({
   v,
@@ -281,7 +282,6 @@ React.useEffect(() => {
 
         <h3 className="min-w-0 text-lg font-semibold leading-tight">
           <span className="break-words">{v.movie?.title || "Untitled"}</span>
-          {releaseYear && <span className="ml-2 text-gray-500">({releaseYear})</span>}
           {showRank && <RankBadge pos={rank as number} tot={total as number} />}
         </h3>
 
@@ -353,8 +353,8 @@ React.useEffect(() => {
 
                 const content = (
                   <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 underline-offset-2">
-                    <Star className="h-4 w-4 text-yellow-400" fill="currentColor" stroke="none" />
-                    IMDb {formatScore(v.movie.imdb_rating)}
+                    <SiImdb className="h-5 w-5 text-yellow-500" />
+                      {formatScore(v.movie.imdb_rating)}
                     {votes ? (
                       <span className="ml-1 text-gray-500 dark:text-zinc-400">
                         • {votes.toLocaleString()} votes

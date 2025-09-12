@@ -5,9 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Circo Cinema</title>
     <script type="module" src="/src/main.tsx"></script>
+    <style>
+      /* Nasconde la scrollbar ma mantiene lo scroll */
+      .scrollbar-hide::-webkit-scrollbar {
+        display: none;
+      }
+      .scrollbar-hide {
+        -ms-overflow-style: none;  /* IE e Edge */
+        scrollbar-width: none;     /* Firefox */
+      }
+    </style>
   </head>
   <body class="bg-gray-50">
-    <div id="root" data-scroll-root class="h-screen overflow-y-auto"></div>
+    <div id="root" data-scroll-root class="h-screen overflow-y-scroll scrollbar-hide"></div>
     <div id="tailwind-ok" class="m-4"></div>
   </body>
 </html>
