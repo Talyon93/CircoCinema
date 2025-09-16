@@ -7,15 +7,15 @@ import { Leaderboards } from "../StatsKit/sections/Leaderboards";
 import { PickerAverages } from "../StatsKit/sections/PickerAverages";
 import { TopFlop } from "../StatsKit/sections/TopFlop";
 import { GroupImdb } from "../StatsKit/sections/GroupImdb";
-import { UserPanelClassic } from "../StatsKit/sections/UserPanelClassic";
+import { UserPanelClassic } from "../StatsKit/sections/UserPanelClassic/index";
 import { ImdbDelta } from "../StatsKit/sections/ImdbDelta";
 import { ScatterRuntimeSection } from "../StatsKit/sections/ScatterRuntimeSection";
 import { SimilarityMatrixSection } from "../StatsKit/sections/SimilarityMatrixSection";
 import { DistributionInsightSection } from "../StatsKit/sections/DistributionInsightSection";
 import { Achievements } from "../StatsKit/sections/Achievements";
 
-import { avgOf, pearson } from "../StatsKit/utils/math";
-import { refScoreFor } from "../StatsKit/utils/refScore";
+import { avgOf, pearson } from "../Utils/math";
+import { refScoreFor } from "../Utils/refScore";
 
 // icone
 import { BarChart3, User, Trophy, CalendarRange, Medal } from "lucide-react";

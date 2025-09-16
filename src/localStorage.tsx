@@ -10,6 +10,7 @@ export const K_ACTIVE_RATINGS = "cn_active_ratings"; // { [user]: number }
 export const K_PROFILE_PREFIX = "cn_profile_";       // `${K_PROFILE_PREFIX}${username}` -> { avatar?: string }
 export const K_TMDB_CACHE = "cn_tmdb_cache";         // cache poster/overview per titolo
 export const K_THEME = "cn_theme";                   // 'light' | 'dark'
+export const K_NEXT_PICKER = "cn_next_picker"; // { name: string; decidedAt?: number } | null
 
 export function lsGetJSON<T>(key: string, fallback: T): T {
   try {

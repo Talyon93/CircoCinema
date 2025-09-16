@@ -10,6 +10,8 @@ import { sb } from "../supabaseClient";
 import { ensureLiveFileExists, loadHistoryLive, subscribeHistoryLive } from "../storage";
 import { K_VIEWINGS, lsGetJSON } from "../localStorage";
 import { loadSharedState, saveSharedState, subscribeSharedState, SharedState } from "../state";
+import ScoreSlider from "../Components/UI/ScoreSlider";
+import { setNextPicker } from "../state";
 
 /* ===================== Wheel shared payload ===================== */
 type WheelShared = {
@@ -22,109 +24,6 @@ type WheelShared = {
   entries: string[];      // lista CONGELATA per lo spin (uguale per tutti)
   winner?: string;
 };
-
-/* ===================== Fancy, responsive slider ===================== */
-function ScoreSlider({
-  value,
-  onChange,
-  min = 1,
-  max = 10,
-  step = 0.25,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-  min?: number;
-  max?: number;
-  step?: number;
-}) {
-  const clamp = (n: number) => Math.min(max, Math.max(min, n));
-  const snap = (n: number) => {
-    const snapped = Math.round(n / step) * step;
-    const decimals = String(step).includes(".") ? String(step).split(".")[1].length : 0;
-    return Number(clamp(snapped).toFixed(Math.max(decimals, 2)));
-  };
-
-  const toPct = (n: number) => ((clamp(n) - min) / (max - min)) * 100;
-  const pct = toPct(value);
-  const mid = min + (max - min) / 2;
-
-  const fmt = (n: number) => {
-    try {
-      return typeof (formatScore as any) === "function"
-        ? (formatScore as any)(n)
-        : (Math.round(n * 100) / 100).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
-    } catch {
-      return String(n);
-    }
-  };
-
-  const Pill = ({ children }: { children: React.ReactNode }) => (
-    <span
-      className="rounded-md px-1.5 py-[2px] text-[12px] font-semibold
-                 bg-white/90 text-gray-900 ring-1 ring-gray-300 shadow-sm
-                 dark:bg-zinc-900/85 dark:text-zinc-50 dark:ring-zinc-700"
-    >
-      {children}
-    </span>
-  );
-
-  return (
-    <div className="relative">
-      {/* Track */}
-      <div className="relative h-3 w-full rounded-full bg-zinc-800/80">
-        {/* Fill */}
-        <div
-          className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-lime-500 to-lime-400"
-          style={{ width: `${pct}%` }}
-        />
-        {/* tacche intere */}
-        {Array.from({ length: Math.floor(max - min) + 1 }, (_, i) => i + min).map((n) => (
-          <div
-            key={n}
-            className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 bg-white/35"
-            style={{ left: `calc(${toPct(n)}% - 1px)` }}
-          />
-        ))}
-      </div>
-
-      {/* Bubble + thumb visuali */}
-      <div
-        className="pointer-events-none absolute -top-12 select-none"
-        style={{ left: `calc(${pct}% - 24px)` }}
-      >
-        <div className="rounded-xl border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm font-bold text-white shadow-lg">
-          {fmt(value)}
-        </div>
-      </div>
-      <div
-        className="pointer-events-none absolute -top-[10px] grid h-8 w-8 place-items-center rounded-full bg-white text-[10px] font-bold text-zinc-900 shadow-lg"
-        style={{ left: `calc(${pct}% - 16px)` }}
-      >
-        ●
-      </div>
-
-      {/* Range reale */}
-      <input
-        aria-label="Vote slider"
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(snap(parseFloat((e.target as HTMLInputElement).value)))}
-        onInput={(e) => onChange(snap(parseFloat((e.target as HTMLInputElement).value)))}
-        className="absolute inset-0 z-10 h-8 w-full cursor-pointer appearance-none bg-transparent opacity-0"
-      />
-
-      {/* Label */}
-      <div className="mt-1.5 flex justify-between">
-        <Pill>{fmt(min)}</Pill>
-        <Pill>{fmt(mid)}</Pill>
-        <Pill>{fmt(max)}</Pill>
-      </div>
-    </div>
-  );
-}
 
 /* ===================== Types ===================== */
 export type ActiveSession = {
@@ -863,6 +762,10 @@ export function WheelOfNames({
       const name = inUse[idx];
       setWinner(name);
 
+      try {
+        await setNextPicker(name);
+      } catch {}
+
       if (remote?.isSpinning && remote.runId && !remote.winner) {
         const stopped: WheelShared = { ...remote, isSpinning: false, winner: name };
         try { await saveSharedState({ wheel: stopped } as any); } catch {}
@@ -1078,6 +981,21 @@ function ClosedRecapCard({
   const entries = Object.entries(ratings) as [string, number][];
   const scores = entries.map(([, v]) => Number(v));
   const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  const [nextPicker, setNextPicker] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let off: (() => void) | null = null;
+    (async () => {
+      try {
+        const s = await loadSharedState();
+        setNextPicker(((s as any)?.nextPicker?.name) ?? ((s as any)?.wheel?.winner) ?? null);
+        off = subscribeSharedState((n: SharedState) => {
+          setNextPicker(((n as any)?.nextPicker?.name) ?? ((n as any)?.wheel?.winner) ?? null);
+        });
+      } catch {}
+    })();
+    return () => off?.();
+  }, []);
 
   const poster = movie?.poster_path ? getPosterUrl(movie.poster_path, "w342") : "";
   const releaseYear =
@@ -1125,6 +1043,11 @@ function ClosedRecapCard({
   return (
     <Card>
       <div className="mb-2 text-lg font-bold">La votazione è chiusa.</div>
+      {nextPicker && (
+        <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-500/15 px-3 py-1 text-sm text-amber-200">
+          Prossimo a scegliere: <b className="text-amber-100">{nextPicker}</b>
+        </div>
+      )}
       <div className="grid gap-5 md:grid-cols-[176px,1fr]">
         <div className="flex items-start justify-center">
           {poster ? (
@@ -1211,8 +1134,8 @@ function ClosedRecapCard({
         <WheelOfNames
           candidates={allHistoricalVoters}
           roomId="global"
-          onWinner={(name) => {
-            console.log("Estratto:", name);
+          onWinner={async (name) => {
+            try { await setNextPicker(name); } catch {}
           }}
         />
       </div>

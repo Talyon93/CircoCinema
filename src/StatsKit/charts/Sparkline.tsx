@@ -159,6 +159,9 @@ export function Sparkline({
   const baseLeft = padding + X_PAD; // NUOVO bordo sinistro “attivo”
   const baseRight = W - padding - X_PAD;
 
+  const baseTop = padding;
+  const baseBottom = H - padding;
+
   // mapper coordinate
   const nx = (x: number) =>
     baseLeft + (maxX === minX ? 0.5 : (x - minX) / (maxX - minX)) * innerW;
@@ -176,27 +179,53 @@ export function Sparkline({
     const r = ref.current!.getBoundingClientRect();
     return { boxX: e.clientX - r.left + 10, boxY: e.clientY - r.top + 10 };
   }
+  
+function handleMove(e: React.MouseEvent<SVGRectElement>) {
+  // bounding box del RECT di capture (in pixel)
+  const r = (e.currentTarget as SVGRectElement).getBoundingClientRect();
+  const mxPx = e.clientX - r.left;
 
-  // nearest point
-  function handleMove(e: React.MouseEvent<SVGRectElement>) {
-    const r = (e.target as SVGRectElement).getBoundingClientRect();
-    const mx = e.clientX - r.left;
-    let best = pts[0],
-      bestDx = Math.abs(mx - pts[0].x);
-    for (let i = 1; i < pts.length; i++) {
-      const dx = Math.abs(mx - pts[i].x);
-      if (dx < bestDx) {
-        best = pts[i];
-        bestDx = dx;
-      } else if (pts[i].x > mx && dx > bestDx) break;
+  // converti in coordinate del viewBox/plot:
+  const mxLocal =
+    baseLeft + (mxPx / r.width) * (baseRight - baseLeft); // <-- QUI la conversione corretta
+
+  // trova il punto con x più vicina a mxLocal
+  let best = pts[0];
+  let bestDx = Math.abs(mxLocal - pts[0].x);
+  for (let i = 1; i < pts.length; i++) {
+    const dx = Math.abs(mxLocal - pts[i].x);
+    if (dx < bestDx) {
+      best = pts[i];
+      bestDx = dx;
     }
-    setHover({ ...toLocal(e as any), d: { ...best, val: best.val as number } });
   }
+
+  // posiziona il tooltip vicino al punto e clamp dentro il chart
+  const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+  const boxW = 180; // stima sicura per evitare overflow a destra
+  const boxX = clamp(best.x + 8, baseLeft + 8, baseRight - boxW);
+  const boxY = clamp(best.y - 8, baseTop + 8, baseBottom - 32);
+
+  setHover({
+    boxX,
+    boxY,
+    d: { x: best.x, y: best.y, val: best.val as number, title: best.title, label: best.label },
+  });
+}
+
   function handleLeave() {
     setHover(null);
   }
 
-  const yTicksAvg = [4, 5, 6, 7, 8, 9, 10];
+  const yTicksAvgDyn =
+    mode === "avg"
+      ? Array.from(
+        { length: Math.floor(maxY) - Math.ceil(minY) + 1 },
+        (_, i) => Math.ceil(minY) + i
+      )
+      : [];
+
+  const yTicksAvg = yTicksAvgDyn;
   const yTicksPercent = [0, 25, 50, 75, 100];
 
   return (
@@ -210,20 +239,10 @@ export function Sparkline({
         </defs>
 
         {/* grid per media 4..10 */}
-        {mode === "avg" &&
-          gridForAvg &&
-          yTicksAvg.map((y) => (
-            <line
-              key={y}
-              x1={baseLeft}
-              x2={baseRight}
-              y1={ny(y)}
-              y2={ny(y)}
-              stroke="currentColor"
-              className="text-zinc-800"
-              strokeWidth={0.5}
-            />
-          ))}
+        {mode === "avg" && gridForAvg && yTicksAvgDyn.map((y) => (
+          <line key={y} x1={baseLeft} x2={baseRight} y1={ny(y)} y2={ny(y)}
+            stroke="currentColor" className="text-zinc-800" strokeWidth={0.5} />
+        ))}
 
         {/* grid per percentuali 0..100 */}
         {mode === "percent" &&
@@ -304,8 +323,8 @@ export function Sparkline({
                 (mode === "percent"
                   ? `${p.val}%`
                   : mode === "delta"
-                  ? `Δ ${formatScore(p.val as number)}`
-                  : `${formatScore(p.val as number)} / 10`) +
+                    ? `Δ ${formatScore(p.val as number)}`
+                    : `${formatScore(p.val as number)} / 10`) +
                 (p.label ? `\n${p.label}` : "")}
             </title>
           </circle>
@@ -313,30 +332,21 @@ export function Sparkline({
 
         {/* overlay trasparente per hover */}
         <rect
-          x={baseLeft}
-          y={padding}
-          width={innerW}
-          height={innerH}
-          fill="white"
-          fillOpacity={0}
-          pointerEvents="all"
-          onMouseMove={handleMove}
-          onMouseLeave={handleLeave}
-        />
+  x={baseLeft}
+  y={baseTop}
+  width={baseRight - baseLeft}
+  height={baseBottom - baseTop}
+  fill="white"
+  fillOpacity={0}
+  pointerEvents="all"
+  onMouseMove={handleMove}
+  onMouseLeave={handleLeave}
+/>
 
         {/* etichette Y per "avg" */}
-        {mode === "avg" &&
-          gridForAvg &&
-          yTicksAvg.map((y) => (
-            <text
-              key={y}
-              x={4}
-              y={ny(y) + 3}
-              className="fill-current text-[10px] text-zinc-500"
-            >
-              {y}
-            </text>
-          ))}
+        {mode === "avg" && gridForAvg && yTicksAvgDyn.map((y) => (
+          <text key={y} x={4} y={ny(y) + 3} className="fill-current text-[10px] text-zinc-500">{y}</text>
+        ))}
 
         {/* etichette Y per "percent" */}
         {mode === "percent" &&

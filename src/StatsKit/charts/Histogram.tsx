@@ -1,31 +1,61 @@
-
 // charts/Histogram.tsx
 import React from "react";
-export function Histogram({ values }:{ values:number[] }){
+
+export function Histogram({
+  values,
+  height = 120,
+  gap = 8,
+  embedded = false, // <-- NEW
+}: {
+  values: number[];
+  height?: number;
+  gap?: number;
+  embedded?: boolean; // <-- NEW
+}) {
   const buckets = Array.from({ length: 10 }, (_, i) => i + 1);
   const counts = buckets.map((b) => values.filter((v) => Math.round(v) === b).length);
   const max = Math.max(1, ...counts);
-  function colorForBucket(b: number) {
-    if (b <= 3) return { bar: "from-rose-500 to-rose-400", dot: "bg-rose-500" };
-    if (b <= 6) return { bar: "from-amber-400 to-yellow-300", dot: "bg-amber-400" };
-    return { bar: "from-emerald-500 to-green-400", dot: "bg-emerald-500" };
+
+  const barAreaH = Math.max(72, Math.min(height - 28, height));
+  const gridY = [0.5];
+
+  function colors(b: number) {
+    if (b <= 3)  return { bar: "from-rose-500/70 to-rose-400/50", dot: "bg-rose-400" };
+    if (b <= 6)  return { bar: "from-amber-400/80 to-yellow-300/60", dot: "bg-amber-300" };
+    return         { bar: "from-emerald-500/70 to-green-400/50",    dot: "bg-emerald-400" };
   }
-  const H = 90; const barMaxH = 68; const gridY = [0.5];
-  return (
-    <div className="relative">
-      <div className="absolute inset-x-0 top-0 h-[90px]">
+
+  const Inner = (
+    <div className="relative" style={{ height }} aria-hidden="true">
+      <div className="absolute inset-x-0 top-0">
         {gridY.map((g, idx) => (
-          <div key={idx} className="absolute inset-x-0 border-t border-dashed border-zinc-700/40" style={{ top: `${(1 - g) * H}px` }} />
+          <div
+            key={idx}
+            className="absolute inset-x-0 border-t border-dashed border-zinc-700/40"
+            style={{ top: `${(1 - g) * barAreaH + 10}px` }}
+          />
         ))}
       </div>
-      <div className="relative grid grid-cols-10 items-end gap-6">
+      <div
+        className="relative grid items-end"
+        style={{
+          gridTemplateColumns: "repeat(10, minmax(0,1fr))",
+          columnGap: gap,
+          height: barAreaH + 12,
+        }}
+      >
         {counts.map((c, i) => {
-          const { bar, dot } = colorForBucket(i + 1);
-          const h = (c / max) * barMaxH + (c > 0 ? 6 : 2);
+          const { bar, dot } = colors(i + 1);
+          const h = (c / max) * (barAreaH - 20) + (c > 0 ? 10 : 4);
           return (
             <div key={i} className="flex flex-col items-center">
-              <div className={`w-10 rounded-lg bg-gradient-to-t shadow-sm ${bar}`} style={{ height: `${h}px` }} title={`${c} vote${c !== 1 ? "s" : ""} on ${i + 1}`} aria-label={`${c} votes on ${i + 1}`} />
-              <div className="mt-1 flex items-center gap-1 text-xs tabular-nums">
+              <div
+                className={`w-8 rounded-lg bg-gradient-to-t shadow-sm ${bar}`}
+                style={{ height: `${h}px` }}
+                title={`${c} vote${c !== 1 ? "s" : ""} on ${i + 1}`}
+                aria-label={`${c} votes on ${i + 1}`}
+              />
+              <div className="mt-1 flex items-center gap-1 text-[11px] tabular-nums">
                 <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
                 <span className="font-semibold text-zinc-100">{c}</span>
               </div>
@@ -34,11 +64,15 @@ export function Histogram({ values }:{ values:number[] }){
           );
         })}
       </div>
-      <div className="mt-2 flex items-center gap-4 text-[11px] text-zinc-400">
-        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" /> 1–3</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-400" /> 4–6</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> 7–10</span>
-      </div>
+    </div>
+  );
+
+  // Se "embedded", non usare il box interno
+  if (embedded) return Inner;
+
+  return (
+    <div className="rounded-xl bg-white/[0.02] p-3 ring-1 ring-inset ring-zinc-800/60">
+      {Inner}
     </div>
   );
 }

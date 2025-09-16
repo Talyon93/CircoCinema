@@ -2,7 +2,7 @@
 // charts/ScatterRuntime.tsx
 import React from "react";
 import { formatScore } from "../../Utils/Utils";
-import { mean } from "../utils/math";
+import { mean } from "../../Utils/math";
 export function ScatterRuntime({ points, height=260, padding=36 }:{ points:Array<{ x:number; y:number; size:number; title:string }>; height?:number; padding?:number; }){
   const ref = React.useRef<HTMLDivElement>(null);
   const [W, setW] = React.useState(520);

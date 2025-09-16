@@ -1,5 +1,5 @@
 import { sb, SB_ROW_ID } from "./supabaseClient";
-import { K_VIEWINGS, K_ACTIVE_VOTE, K_ACTIVE_RATINGS, lsGetJSON, lsSetJSON } from "./localStorage";
+import { K_VIEWINGS, K_ACTIVE_VOTE, K_ACTIVE_RATINGS, lsGetJSON, lsSetJSON, K_NEXT_PICKER  } from "./localStorage";
 
 /**
  * Shared "room state" kept in table `cn_state`.
@@ -7,13 +7,16 @@ import { K_VIEWINGS, K_ACTIVE_VOTE, K_ACTIVE_RATINGS, lsGetJSON, lsSetJSON } fro
  */
 
 export type RatingMap = Record<string, number>;
+export type NextPicker = { name: string; decided_at?: string };
 
 export type SharedState = {
   id: string;
   history: any[];
   active: any | null;
   ratings: RatingMap;
+  nextPicker?: NextPicker | null;
   updated_at?: string;
+  [k: string]: any;
 };
 
 /** Load current shared state from DB (or localStorage fallback). */
@@ -24,26 +27,21 @@ export async function loadSharedState(): Promise<SharedState> {
       history: lsGetJSON<any[]>(K_VIEWINGS, []),
       active: lsGetJSON<any | null>(K_ACTIVE_VOTE, null),
       ratings: lsGetJSON<RatingMap>(K_ACTIVE_RATINGS, {}),
+      nextPicker: lsGetJSON<NextPicker | null>(K_NEXT_PICKER, null),
     };
   }
-  const { data, error } = await sb
-    .from("cn_state")
-    .select("*")
-    .eq("id", SB_ROW_ID)
-    .single();
-  if (error || !data) {
-    return { id: SB_ROW_ID, history: [], active: null, ratings: {} };
-  }
+  const { data, error } = await sb.from("cn_state").select("*").eq("id", SB_ROW_ID).single();
+  if (error || !data) return { id: SB_ROW_ID, history: [], active: null, ratings: {}, nextPicker: null };
   return data as SharedState;
 }
 
 /** Upsert (merge) the shared state; also mirrors to localStorage for resilience. */
 export async function saveSharedState(partial: Partial<SharedState>) {
-  // helper: mirror su localStorage per tab sync locale
   const writeLocal = (s: Partial<SharedState>) => {
     if (s.history) lsSetJSON(K_VIEWINGS, s.history);
     if ("active" in s) lsSetJSON(K_ACTIVE_VOTE, s.active ?? null);
     if (s.ratings) lsSetJSON(K_ACTIVE_RATINGS, s.ratings);
+    if ("nextPicker" in s) lsSetJSON(K_NEXT_PICKER, s.nextPicker ?? null);
   };
 
   if (!sb) {
@@ -53,10 +51,9 @@ export async function saveSharedState(partial: Partial<SharedState>) {
 
   const current = await loadSharedState();
   const next: SharedState = {
+    ...current,
+    ...partial,
     id: SB_ROW_ID,
-    history: partial.history ?? current.history,
-    active: partial.active === undefined ? current.active : partial.active,
-    ratings: partial.ratings ?? current.ratings,
     updated_at: new Date().toISOString(),
   };
 
@@ -66,10 +63,21 @@ export async function saveSharedState(partial: Partial<SharedState>) {
     return { error };
   }
 
-  // write-through locale per test in locale + resilienza
   writeLocal(next);
   return { error: null as any };
 }
+
+export async function setNextPicker(name: string | null) {
+  const payload = name
+    ? { nextPicker: { name, decided_at: new Date().toISOString() } }
+    : { nextPicker: null };
+  return saveSharedState(payload);
+}
+
+export async function clearNextPicker() {
+  return saveSharedState({ nextPicker: null });
+}
+
 
 /** Subscribe to realtime changes on cn_state and refetch on notify. */
 export function subscribeSharedState(onChange: (s: SharedState) => void) {

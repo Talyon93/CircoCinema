@@ -1,7 +1,7 @@
 
 // charts/Radar.tsx
 import React from "react";
-import { linspace } from "../utils/math";
+import { linspace } from "../../Utils/math";
 export function Radar({ axes, size=240 }:{ axes:Array<{label:string; value:number}>; size?:number; }){
   const R = size/2 - 24;
   const cx = size/2, cy = size/2;

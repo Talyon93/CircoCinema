@@ -16,7 +16,8 @@ import { PickedByBadge } from "./PickedByBadge";
 import { VoterChip } from "./VoterChip";
 import { formatScore } from "../../Utils/Utils";
 import { SiImdb } from "react-icons/si";
-
+import ScoreSlider from "./ScoreSlider";
+import { Sparkles, Check, X } from "lucide-react";
 
 // ==== Country helpers (estrazione + fallback + normalizzazione bandiere) ====
 // Ritorna un ISO2 (es. "US") usando priorità: TMDB -> OMDb -> companies -> lingua
@@ -103,20 +104,22 @@ function extractCountries(viewing: any): string[] {
   return uniquePreserve(out.map(x => x.toUpperCase()), x => x).slice(0,1);
 }
 
-
 export function HistoryCardExtended({
   v,
   onEdit,
   onMetaResolved,
-  // NEW: posizione in classifica (opzionale)
   rank,
   total,
+  currentUser,
+  onQuickVote,
 }: {
   v: any;
   onEdit?: (id: any) => void;
   onMetaResolved?: (viewingId: any, nextMovie: any) => void;
-  rank?: number; // posizione 1-based
-  total?: number; // numero totale film in classifica
+  rank?: number;
+  total?: number;
+  currentUser?: string;
+  onQuickVote?: (viewingId: any, score: number) => void;
 }) {
   const ratings = (v.ratings || {}) as Record<string, number>;
   const entries = Object.entries(ratings) as [string, number][];
@@ -131,6 +134,7 @@ export function HistoryCardExtended({
     ? v.movie.genres.map((g: any) => g?.name).filter(Boolean).join(", ")
     : "";
 
+    
   // ----- lazy meta (poster/overview) + cache -----
   const [meta, setMeta] = React.useState<{ poster_path?: string; overview?: string }>({
     poster_path: v?.movie?.poster_path,
@@ -361,33 +365,6 @@ React.useEffect(() => {
     })();
   }, [v?.movie?.tmdb_id, v?.movie?.id]);
 
-  // --- UI helpers (ring & bar) ---
-  const AvgRing = ({ value }: { value: number }) => {
-    const r = 26,
-      c = 2 * Math.PI * r,
-      pct = Math.max(0, Math.min(100, ((value - 1) / 9) * 100));
-    return (
-      <div className="relative h-16 w-16">
-        <svg viewBox="0 0 64 64" className="h-16 w-16 -rotate-90">
-          <circle cx="32" cy="32" r={r} strokeWidth="8" className="fill-none stroke-zinc-800/60" />
-          <circle
-            cx="32"
-            cy="32"
-            r={r}
-            strokeWidth="8"
-            className="fill-none stroke-lime-400"
-            strokeLinecap="round"
-            strokeDasharray={c}
-            strokeDashoffset={c - (pct / 100) * c}
-          />
-        </svg>
-        <div className="absolute inset-0 grid place-items-center text-sm font-bold">
-          {formatScore(value)}
-        </div>
-      </div>
-    );
-  };
-
   const showRank = typeof rank === "number" && typeof total === "number" && total > 0;
 
   const RankBadge = ({ pos, tot }: { pos: number; tot: number }) => (
@@ -402,237 +379,299 @@ React.useEffect(() => {
     </span>
   );
 
-  return (
-    <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
-      {/* Header */}
-      <div className="mb-3 flex items-center gap-3">
-        {v.picked_by && (
-          <>
-            <PickedByBadge name={v.picked_by} />
-            <div className="mx-1 text-gray-300">•</div>
-          </>
-        )}
+  const hasVoted = currentUser ? Object.prototype.hasOwnProperty.call(ratings, currentUser) : true;
 
-        <h3 className="min-w-0 text-lg font-semibold leading-tight">
-          <span className="break-words">{v.movie?.title || "Untitled"}</span>
-          {showRank && <RankBadge pos={rank as number} tot={total as number} />}
-        </h3>
+    // quick vote state
+  const [qvOpen, setQvOpen] = React.useState(false);
+  const [qvScore, setQvScore] = React.useState<number>(7);
 
-        {onEdit && (
+  React.useEffect(() => {
+    if (!hasVoted && currentUser && typeof ratings[currentUser] === "number") {
+      setQvScore(Number(ratings[currentUser]));
+    }
+  }, [hasVoted, currentUser, ratings]);
+
+return (
+  <div className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ring-1 ring-black/5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
+    {/* Header */}
+    <div className="mb-3 flex items-center gap-3">
+      {v.picked_by && (
+        <>
+          <PickedByBadge name={v.picked_by} />
+          <div className="mx-1 text-gray-300">•</div>
+        </>
+      )}
+
+      <h3 className="min-w-0 text-lg font-semibold leading-tight">
+        <span className="break-words">{v.movie?.title || "Untitled"}</span>
+        {showRank && <RankBadge pos={rank as number} tot={total as number} />}
+      </h3>
+
+      {onEdit && (
+        <div className="flex items-center gap-2">
           <button
-            className="ml-2 rounded-full border px-2.5 py-1 text-xs dark:border-zinc-700"
-            onClick={() => onEdit(v.id)}
+            onClick={onEdit}
+            className="rounded-lg border border-zinc-700/70 bg-zinc-900/50 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800/70"
           >
             Edit
           </button>
-        )}
 
-        {v.started_at && (
-          <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
-            {new Date(v.started_at).toLocaleString()}
-          </span>
-        )}
-      </div>
-
-      {/* Layout: poster grande + info a destra */}
-      <div className="grid gap-5 md:grid-cols-[176px,1fr]">
-        <div className="flex items-start justify-center">
-          {poster ? (
-            <img
-              src={poster}
-              alt={v.movie?.title}
-              className="h-[264px] w-[176px] rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
-            />
-          ) : (
-            <div className="flex h-[264px] w-[176px] items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
-              No poster
-            </div>
+          {!hasVoted && onQuickVote && (
+            <button
+              onClick={() => setQvOpen((s) => !s)}
+              title="Vote on this movie"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/25"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              Vote
+            </button>
           )}
         </div>
+      )}
 
-        <div className="min-w-0">
-          {/* META */}
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
-            {releaseYear && (
-              <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
-                <Calendar className="h-4 w-4 text-blue-400" />
-                {releaseYear}
-              </span>
-            )}
+      {v.started_at && (
+        <span className="ml-auto rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 dark:bg-zinc-900 dark:text-zinc-400 dark:border dark:border-zinc-800">
+          {new Date(v.started_at).toLocaleString()}
+        </span>
+      )}
+    </div>
 
-            {Number(v?.movie?.runtime) > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
-                <Timer className="h-4 w-4 text-pink-400" />
-                {v.movie.runtime} min
-              </span>
-            )}
+    {/* Quick vote panel (appears under header) */}
+{!hasVoted && qvOpen && onQuickVote && (
+  <div className="mb-4 rounded-xl border border-zinc-700/70 bg-zinc-900/50 p-3">
+    <div className="mb-2 flex items-center justify-between">
+      <div className="text-xs text-zinc-400">
+        Choose your score <span className="text-zinc-500">(drag the slider)</span>
+      </div>
+      <div className="rounded-full border border-zinc-700/70 bg-zinc-900/80 px-2 py-0.5 text-xs font-semibold text-zinc-200">
+        {formatScore(qvScore)}
+      </div>
+    </div>
 
-            {genreLine && (
-              <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
-                <Film className="h-4 w-4 text-green-400" />
-                {genreLine}
-              </span>
-            )}
+    <ScoreSlider value={qvScore} onChange={setQvScore} min={1} max={10} step={0.25} />
 
-{/* Country (una bandiera dal JSON) */}
-{v?.movie?.primary_country && (
-  <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
-    <img
-      src={`https://flagcdn.com/24x18/${String(v.movie.primary_country).toLowerCase()}.png`}
-      alt={v.movie.primary_country}
-      title={v.movie.primary_country}
-      className="h-3.5 w-5 rounded-sm shadow-sm"
-      loading="lazy"
-    />
-  </span>
-)}
-{/* fallback se ci sono solo origin_country */}
-{(!v?.movie?.production_countries?.length &&
-  Array.isArray(v?.movie?.origin_country) &&
-  v.movie.origin_country.length > 0) && (
-  (() => {
-    const code = (v.movie.origin_country[0] || "").toLowerCase();
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
-        <img
-          src={`https://flagcdn.com/24x18/${code}.png`}
-          alt={code}
-          title={code}
-          className="h-3.5 w-5 rounded-sm shadow-sm"
-          loading="lazy"
-        />
-      </span>
-    );
-  })()
-)}
-
-            {/* Rating + votes (un unico badge) */}
-            {(() => {
-              const imdbId = v?.movie?.imdb_id as string | undefined;
-
-              if (typeof v?.movie?.imdb_rating === "number") {
-                const votes =
-                  typeof v?.movie?.imdb_votes === "number" && v.movie.imdb_votes > 0
-                    ? v.movie.imdb_votes
-                    : null;
-
-                const content = (
-                  <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 underline-offset-2">
-                    <SiImdb className="h-5 w-5 text-yellow-500" />
-                      {formatScore(v.movie.imdb_rating)}
-                    {votes ? (
-                      <span className="ml-1 text-gray-500 dark:text-zinc-400">
-                        • {votes.toLocaleString()} votes
-                      </span>
-                    ) : null}
-                  </span>
-                );
-
-                // Se abbiamo l'ID IMDb, rendiamo tutto il badge cliccabile
-                return imdbId ? (
-                  <a
-                    href={`https://www.imdb.com/title/${imdbId}/`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open on IMDb"
-                    className="no-underline hover:underline"
-                  >
-                    {content}
-                  </a>
-                ) : (
-                  content
-                );
-              }
-
-              if (typeof v?.movie?.tmdb_vote_average === "number") {
-                const votes =
-                  typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0
-                    ? v.movie.tmdb_vote_count
-                    : null;
-
-                return (
-                  <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
-                    <Star className="h-4 w-4 text-sky-400" fill="currentColor" stroke="none" />
-                    TMDB {formatScore(v.movie.tmdb_vote_average)}
-                    {votes ? (
-                      <span className="ml-1 text-gray-500 dark:text-zinc-400">
-                        • {votes.toLocaleString()} votes
-                      </span>
-                    ) : null}
-                  </span>
-                );
-              }
-
-              return null;
-            })()}
-
-            {/* Where to watch */}
-{v?.movie?.title && (
-  <div className="inline-flex items-center gap-2">
-    {watchProviders.netflix && (
-      <a
-        href={`https://www.netflix.com/search?q=${encodeURIComponent(v.movie.title)}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
-        title="Apri su Netflix"
+    <div className="mt-3 flex items-center gap-2">
+      <button
+        className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+        onClick={() => {
+          onQuickVote(v.id, qvScore);
+          setQvOpen(false);
+        }}
       >
-        <Play className="h-4 w-4 text-red-500" />
-        Netflix
-      </a>
-    )}
+        <Check className="h-4 w-4" />
+        Save
+      </button>
 
-    {watchProviders.prime && (
-      <a
-        href={`https://www.primevideo.com/search?phrase=${encodeURIComponent(v.movie.title)}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
-        title="Apri su Prime Video"
+      <button
+        className="inline-flex items-center gap-2 rounded-lg border border-zinc-700/70 bg-zinc-900/50 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800/70"
+        onClick={() => setQvOpen(false)}
       >
-        <Tv className="h-4 w-4 text-sky-400" />
-        Prime Video
-      </a>
-    )}
-
-    {/* Fallback SEMPRE visibile: JustWatch (link diretto se disponibile, altrimenti ricerca) */}
-    <a
-  href={watchProviders.jwLink || jwSearchUrl(v.movie.title, releaseYear || undefined)}
-  target="_blank"
-  rel="noopener noreferrer"
-  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
-  title="Dove guardarlo (JustWatch)"
->
-  <Play className="h-4 w-4" />
-  Where to watch
-</a>
+        <X className="h-4 w-4" />
+        Cancel
+      </button>
+    </div>
   </div>
 )}
 
+    {/* Layout: poster grande + info a destra */}
+    <div className="grid gap-5 md:grid-cols-[176px,1fr]">
+      <div className="flex items-start justify-center">
+        {poster ? (
+          <img
+            src={poster}
+            alt={v.movie?.title}
+            className="h-[264px] w-[176px] rounded-2xl border border-gray-200 object-cover shadow-sm dark:border-zinc-700"
+          />
+        ) : (
+          <div className="flex h-[264px] w-[176px] items-center justify-center rounded-2xl border border-dashed text-xs text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+            No poster
           </div>
+        )}
+      </div>
 
-          <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
-            {overview || "No description available."}
-          </p>
+      <div className="min-w-0">
+        {/* META */}
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
+          {releaseYear && (
+            <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+              <Calendar className="h-4 w-4 text-blue-400" />
+              {releaseYear}
+            </span>
+          )}
 
-          <div className="flex items-center gap-4">
-            {avg !== null && <ScoreDonut value={avg} />}
-            <div className="flex-1">
-              <VotesBar entries={entries} avg={avg} />
-            </div>
-          </div>
+          {Number(v?.movie?.runtime) > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+              <Timer className="h-4 w-4 text-pink-400" />
+              {v.movie.runtime} min
+            </span>
+          )}
 
-          {entries.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {Object.entries(ratings)
-                .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
-                .map(([name, score]) => (
-                  <VoterChip key={name} name={name} score={Number(score)} />
-                ))}
+          {genreLine && (
+            <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+              <Film className="h-4 w-4 text-green-400" />
+              {genreLine}
+            </span>
+          )}
+
+          {/* Country (una bandiera dal JSON) */}
+          {v?.movie?.primary_country && (
+            <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+              <img
+                src={`https://flagcdn.com/24x18/${String(v.movie.primary_country).toLowerCase()}.png`}
+                alt={v.movie.primary_country}
+                title={v.movie.primary_country}
+                className="h-3.5 w-5 rounded-sm shadow-sm"
+                loading="lazy"
+              />
+            </span>
+          )}
+
+          {/* fallback se ci sono solo origin_country */}
+          {!v?.movie?.production_countries?.length &&
+            Array.isArray(v?.movie?.origin_country) &&
+            v.movie.origin_country.length > 0 &&
+            (() => {
+              const code = (v.movie.origin_country[0] || "").toLowerCase();
+              return (
+                <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+                  <img
+                    src={`https://flagcdn.com/24x18/${code}.png`}
+                    alt={code}
+                    title={code}
+                    className="h-3.5 w-5 rounded-sm shadow-sm"
+                    loading="lazy"
+                  />
+                </span>
+              );
+            })()}
+
+          {/* Rating + votes (un unico badge) */}
+          {(() => {
+            const imdbId = v?.movie?.imdb_id as string | undefined;
+
+            if (typeof v?.movie?.imdb_rating === "number") {
+              const votes =
+                typeof v?.movie?.imdb_votes === "number" && v.movie.imdb_votes > 0
+                  ? v.movie.imdb_votes
+                  : null;
+
+              const content = (
+                <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 underline-offset-2">
+                  <SiImdb className="h-5 w-5 text-yellow-500" />
+                  {formatScore(v.movie.imdb_rating)}
+                  {votes ? (
+                    <span className="ml-1 text-gray-500 dark:text-zinc-400">
+                      • {votes.toLocaleString()} votes
+                    </span>
+                  ) : null}
+                </span>
+              );
+
+              // Se abbiamo l'ID IMDb, rendiamo tutto il badge cliccabile
+              return imdbId ? (
+                <a
+                  href={`https://www.imdb.com/title/${imdbId}/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open on IMDb"
+                  className="no-underline hover:underline"
+                >
+                  {content}
+                </a>
+              ) : (
+                content
+              );
+            }
+
+            if (typeof v?.movie?.tmdb_vote_average === "number") {
+              const votes =
+                typeof v?.movie?.tmdb_vote_count === "number" && v.movie.tmdb_vote_count > 0
+                  ? v.movie.tmdb_vote_count
+                  : null;
+
+              return (
+                <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700">
+                  <Star className="h-4 w-4 text-sky-400" fill="currentColor" stroke="none" />
+                  TMDB {formatScore(v.movie.tmdb_vote_average)}
+                  {votes ? (
+                    <span className="ml-1 text-gray-500 dark:text-zinc-400">
+                      • {votes.toLocaleString()} votes
+                    </span>
+                  ) : null}
+                </span>
+              );
+            }
+
+            return null;
+          })()}
+
+          {/* Where to watch */}
+          {v?.movie?.title && (
+            <div className="inline-flex items-center gap-2">
+              {watchProviders.netflix && (
+                <a
+                  href={`https://www.netflix.com/search?q=${encodeURIComponent(v.movie.title)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
+                  title="Apri su Netflix"
+                >
+                  <Play className="h-4 w-4 text-red-500" />
+                  Netflix
+                </a>
+              )}
+
+              {watchProviders.prime && (
+                <a
+                  href={`https://www.primevideo.com/search?phrase=${encodeURIComponent(v.movie.title)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
+                  title="Apri su Prime Video"
+                >
+                  <Tv className="h-4 w-4 text-sky-400" />
+                  Prime Video
+                </a>
+              )}
+
+              {/* Fallback SEMPRE visibile: JustWatch */}
+              <a
+                href={watchProviders.jwLink || jwSearchUrl(v.movie.title, releaseYear || undefined)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-sm border-zinc-300 dark:border-zinc-700 hover:underline"
+                title="Dove guardarlo (JustWatch)"
+              >
+                <Play className="h-4 w-4" />
+                Where to watch
+              </a>
             </div>
           )}
         </div>
+
+        <p className="mb-4 whitespace-pre-wrap text-[15px] leading-relaxed text-gray-800 dark:text-zinc-300">
+          {overview || "No description available."}
+        </p>
+
+        <div className="flex items-center gap-4">
+          {avg !== null && <ScoreDonut value={avg} />}
+          <div className="flex-1">
+            <VotesBar entries={entries} avg={avg} />
+          </div>
+        </div>
+
+        {entries.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Object.entries(ratings)
+              .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
+              .map(([name, score]) => (
+                <VoterChip key={name} name={name} score={Number(score)} />
+              ))}
+          </div>
+        )}
       </div>
     </div>
-  );
+  </div>
+);
+
 }

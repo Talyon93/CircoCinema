@@ -7,7 +7,7 @@ export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 
 /** Shared singleton row id for cn_state */
-export const SB_ROW_ID = "singleton" as const;
+export const SB_ROW_ID = "main" as const;
 
 /** Storage bucket + keys */
 export const STORAGE_BUCKET = "circo";

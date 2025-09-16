@@ -4,25 +4,109 @@ import { loadSharedState, subscribeSharedState, SharedState } from "../../state"
 
 type TabKey = "vote" | "history" | "stats";
 
+/* ---------------- Utilities: next Thursday 21:00 ---------------- */
+function nextThursdayAt21(from = new Date()) {
+  const d = new Date(from);
+  d.setSeconds(0, 0);
+  const day = d.getDay(); // 0=Sun ... 4=Thu
+  const daysUntilThu = (4 - day + 7) % 7;
+  const target = new Date(d);
+  target.setDate(d.getDate() + daysUntilThu);
+  target.setHours(21, 0, 0, 0);
+  if (daysUntilThu === 0 && from.getTime() >= target.getTime()) {
+    target.setDate(target.getDate() + 7);
+  }
+  return target;
+}
+function fmt2(n: number) {
+  return n < 10 ? `0${n}` : `${n}`;
+}
+function diffToDHM(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (d > 0) return `${d}d ${fmt2(h)}h ${fmt2(m)}m`;
+  if (h > 0) return `${h}h ${fmt2(m)}m`;
+  return `${m}m`;
+}
+/* ---------------------------------------------------------------- */
+
+/* ---------- Pretty unified bar: countdown + next picker ---------- */
+function ViewingInfoBar({
+  targetTs,
+  nextPicker,
+}: {
+  targetTs: number;
+  nextPicker: string | null;
+}) {
+  const target = new Date(targetTs);
+  const dateStr = target.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+  });
+  const timeStr = target.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return (
+    <div
+      className={[
+        "flex items-center gap-4 rounded-2xl",
+        "border border-white/10 bg-white/[0.04] px-4 py-2",
+        "backdrop-blur shadow-[0_4px_20px_rgba(0,0,0,0.25)]",
+        "text-[12px] leading-5 text-zinc-100",
+      ].join(" ")}
+    >
+      {/* Data e orario */}
+      <div className="flex items-center gap-2">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        <span className="font-medium">
+          {dateStr},{" "}
+          <span className="font-semibold text-white">{timeStr}</span>
+        </span>
+      </div>
+
+      {/* Divider */}
+      {nextPicker && <span className="h-3 w-px bg-white/15" />}
+
+      {/* Next picker */}
+      {nextPicker && (
+        <div className="flex items-center gap-2">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+          <span className="rounded-md border border-amber-300/25 bg-amber-300/10 px-2 py-[2px] text-amber-100 font-semibold">
+            {nextPicker}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+
 export function Header({
   user,
   onLogout,
   tab,
   setTab,
-  theme,
-  setTheme,
 }: {
   user: string;
   onLogout: () => void;
   tab: TabKey;
   setTab: (t: TabKey) => void;
-  theme: "light" | "dark";
-  setTheme: (t: "light" | "dark") => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const [hasActiveVote, setHasActiveVote] = React.useState(false);
   const [nowTitle, setNowTitle] = React.useState<string | null>(null);
+  const [nextPicker, setNextPicker] = React.useState<string | null>(null);
   const menuRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Countdown state
+  const [targetTs, setTargetTs] = React.useState<number>(() => nextThursdayAt21().getTime());
+  const [nowTs, setNowTs] = React.useState<number>(() => Date.now());
 
   // Imposta Archive come tab iniziale se non salvato
   React.useEffect(() => {
@@ -30,34 +114,35 @@ export function Header({
     if (!saved) setTab("history");
   }, [setTab]);
 
-  // "Now Showing" e stato attivo voto
+  // Sync stato globale (active/nowTitle + nextPicker)
   React.useEffect(() => {
-    let mounted = true;
+    const pickNameFrom = (s: any) =>
+      s?.nextPicker?.name ?? s?.nextpicker?.name ?? s?.next_picker?.name ?? null;
 
+    let off: (() => void) | void;
     (async () => {
       try {
         const s = (await loadSharedState()) as SharedState | null;
-        if (!mounted) return;
         setHasActiveVote(Boolean(s?.active?.movie));
         setNowTitle(s?.active?.movie?.title ?? null);
+        setNextPicker(pickNameFrom(s));
       } catch {
-        if (!mounted) return;
         setHasActiveVote(false);
         setNowTitle(null);
+        setNextPicker(null);
       }
+      off = subscribeSharedState?.((s: SharedState) => {
+        setHasActiveVote(Boolean(s?.active?.movie));
+        setNowTitle(s?.active?.movie?.title ?? null);
+        setNextPicker(pickNameFrom(s));
+      });
     })();
-
-    const unsub = subscribeSharedState?.((s: SharedState) => {
-      setHasActiveVote(Boolean(s?.active?.movie));
-      setNowTitle(s?.active?.movie?.title ?? null);
-    });
-
     return () => {
-      mounted = false;
-      if (typeof unsub === "function") unsub();
+      if (typeof off === "function") off();
     };
   }, []);
 
+  // Gestione apertura/chiusura menu
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     const onClick = (e: MouseEvent) => {
@@ -71,6 +156,17 @@ export function Header({
       document.removeEventListener("mousedown", onClick);
     };
   }, []);
+
+  // Timer per il countdown (tick ogni secondo)
+  React.useEffect(() => {
+    setTargetTs(nextThursdayAt21().getTime());
+    const id = setInterval(() => {
+      const now = Date.now();
+      setNowTs(now);
+      if (now >= targetTs) setTargetTs(nextThursdayAt21(new Date(now)).getTime());
+    }, 1000);
+    return () => clearInterval(id);
+  }, [targetTs]);
 
   // Tab generica con lineetta bianca full width
   const TabBtn = ({ k, label }: { k: TabKey; label: string }) => {
@@ -117,11 +213,19 @@ export function Header({
         "border-b border-zinc-200/70 dark:border-zinc-800",
       ].join(" ")}
     >
-      {/* 3 colonne simmetriche: 1fr / auto / 1fr → tabs sempre centrate */}
+      {/* 3 colonne: 1fr / auto / 1fr (tabs sempre centrate) */}
       <div className="mx-auto grid max-w-6xl grid-cols-[1fr,auto,1fr] items-center gap-3 px-3 py-3 md:px-4">
-        {/* LEFT: badge (non sposta il centro) */}
-        <div className="justify-self-start">
-          <NowShowingBadge />
+        {/* LEFT: badge / info bar */}
+        <div className="justify-self-start flex flex-col gap-2">
+          {hasActiveVote ? (
+            <NowShowingBadge />
+          ) : (
+            <ViewingInfoBar
+              remainingMs={targetTs - nowTs}
+              targetTs={targetTs}
+              nextPicker={nextPicker}
+            />
+          )}
         </div>
 
         {/* CENTER: tabs */}
@@ -131,7 +235,7 @@ export function Header({
           <TabBtn k="stats" label="Stats" />
         </nav>
 
-        {/* RIGHT: riquadro icona + nome (trigger del menu) */}
+        {/* RIGHT: user menu */}
         <div className="justify-self-end flex items-center gap-2">
           <div className="relative" ref={menuRef}>
             <button
@@ -151,12 +255,7 @@ export function Header({
               <span className="max-w-[140px] truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">
                 {user}
               </span>
-              <svg
-                className="h-4 w-4 opacity-70 group-hover:opacity-100"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden
-              >
+              <svg className="h-4 w-4 opacity-70 group-hover:opacity-100" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
                 <path
                   fillRule="evenodd"
                   d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"
@@ -209,16 +308,15 @@ export function Header({
         </div>
       </div>
 
-      {/* Mobile: badge sopra, tabs sotto; il riquadro icona+nome resta uguale */}
+      {/* Mobile: info bar sotto header */}
       <div className="mx-auto block max-w-6xl px-3 pb-3 md:hidden">
-        <div className="mb-2 flex">
-          <NowShowingBadge />
-        </div>
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <TabBtn k="history" label="Archive" />
-          <TabBtn k="vote" label={voteLabel} />
-          <TabBtn k="stats" label="Stats" />
-        </div>
+        {!hasActiveVote && (
+          <ViewingInfoBar
+            remainingMs={targetTs - nowTs}
+            targetTs={targetTs}
+            nextPicker={nextPicker}
+          />
+        )}
       </div>
     </header>
   );
