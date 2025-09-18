@@ -2,8 +2,8 @@
 import React from "react";
 import { formatScore } from "../../Utils/Utils";
 import { AvatarInline } from "./Avatar";
-import { useRoomRealtime } from "../../hooks/useRoomRealtime";
-import type { VoteEventPayload } from "../../realtimeTypes";
+import { useRoomRealtime } from "../../hooks/UseRoomRealtime";
+import type { VoteEventPayload } from "../../RealtimeTypes";
 import { sb } from "../../supabaseClient";
 
 function avgColor(score: number) {
