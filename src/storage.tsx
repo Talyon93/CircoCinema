@@ -1,5 +1,4 @@
 import { saveSharedState, loadSharedState } from "./state";
-import { sha256 } from "./Utils/Hash"; // vedi helper sotto
 import { sb, STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY } from "./supabaseClient";
 
 
@@ -13,6 +12,14 @@ async function downloadJsonSafe<T = any>(bucket: string, key: string): Promise<T
   } catch {
     return null;
   }
+}
+
+
+async function sha256(text: string): Promise<string> {
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  const arr = Array.from(new Uint8Array(buf));
+  return arr.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 function buildBackupKey(prefix = "backups/history") {
