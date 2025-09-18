@@ -28,6 +28,7 @@ import { ViewingModal } from "./Components/history/ViewingModal";
 import { Viewing } from "./types/viewing";
 import { roundToQuarter } from "./Utils/math";
 import { buildDenseRanking } from "./Utils/ranking";
+import VoteModal from "./Components/UI/VoteModal";
 
 export default function CinemaNightApp() {
   const [user, setUser] = useState<string>("");
@@ -40,6 +41,7 @@ export default function CinemaNightApp() {
   const [activeVote, setActiveVote] = useState<any | null>(null);
   const [activeRatings, setActiveRatings] = useState<Record<string, number>>({});
   const [historyMode, setHistoryMode] = useState<"extended" | "compact">("compact");
+  const [voteTarget, setVoteTarget] = useState<Viewing | null>(null); // ⟵ modal voto
 
   // Filters / sort
   const [filterPicker, setFilterPicker] = useState<string>("");
@@ -219,19 +221,28 @@ export default function CinemaNightApp() {
     }
   };
 
+  // ----- helpers -----
+  const getAvgAndCount = (r?: Record<string, number> | null) => {
+    if (!r) return { avg: null as number | null, count: 0 };
+    const vals = Object.values(r).map(Number).filter((n) => Number.isFinite(n));
+    if (!vals.length) return { avg: null, count: 0 };
+    const sum = vals.reduce((a, b) => a + b, 0);
+    return { avg: sum / vals.length, count: vals.length };
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 p-4 text-gray-900 dark:bg-zinc-950 dark:text-zinc-100">
       {!user ? (
         <Login
-  onLogin={(name) => {
-    setUser(name);
-    localStorage.setItem("cn_user", name);
+          onLogin={(name) => {
+            setUser(name);
+            localStorage.setItem("cn_user", name);
 
-    // forza sempre tab iniziale = Archive
-    setTab("history");
-    localStorage.setItem("CN_TAB", "history");
-  }}
-/>
+            // forza sempre tab iniziale = Archive
+            setTab("history");
+            localStorage.setItem("CN_TAB", "history");
+          }}
+        />
       ) : (
         <div className="mx-auto max-w-6xl">
           <Header user={user} onLogout={() => { localStorage.removeItem(K_USER); setUser(""); }} tab={tab} setTab={setTab} />
@@ -423,37 +434,39 @@ export default function CinemaNightApp() {
                     return historyMode === "compact" ? (
                       <HistoryPosterGrid
                         items={L}
+                        currentUserId={user}
                         onOpen={setOpenViewing}
                         onResolve={(id, nextMovie) => {
                           const list = history.map((v) => (v.id === id ? { ...v, movie: nextMovie } : v));
                           setHistory(list);
                           persistHistoryLive(list);
                         }}
+                        onVote={(v) => setVoteTarget(v)}   // <— apre il modal
                       />
                     ) : (
                       L.map((v) => (
                         <HistoryCardExtended
-  key={v.id}
-  v={v as any}
-  onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
-  onMetaResolved={(id, nextMovie) => {
-    const list = history.map((x) => (x.id === id ? { ...x, movie: nextMovie } : x));
-    setHistory(list);
-    persistHistoryLive(list);
-  }}
-  rank={ranking.map.get(v.id)}
-  total={ranking.total}
-  // ➜ NEW
-  currentUser={user}
-  onQuickVote={(id, score) => {
-    const fixed = roundToQuarter(score);
-    const list = history.map((x) =>
-      x.id === id ? { ...x, ratings: { ...(x.ratings || {}), [user]: fixed } } : x
-    );
-    setHistory(list);
-    persistHistoryLive(list);
-  }}
-/>
+                          key={v.id}
+                          v={v as any}
+                          onEdit={() => setEditingViewing({ id: v.id, title: v?.movie?.title || "" })}
+                          onMetaResolved={(id, nextMovie) => {
+                            const list = history.map((x) => (x.id === id ? { ...x, movie: nextMovie } : x));
+                            setHistory(list);
+                            persistHistoryLive(list);
+                          }}
+                          rank={ranking.map.get(v.id)}
+                          total={ranking.total}
+                          // ➜ NEW
+                          currentUser={user}
+                          onQuickVote={(id, score) => {
+                            const fixed = roundToQuarter(score);
+                            const list = history.map((x) =>
+                              x.id === id ? { ...x, ratings: { ...(x.ratings || {}), [user]: fixed } } : x
+                            );
+                            setHistory(list);
+                            persistHistoryLive(list);
+                          }}
+                        />
                       ))
                     );
                   })()}
@@ -474,6 +487,31 @@ export default function CinemaNightApp() {
                     setOpenViewing(null);
                   }}
                   currentUser={user}
+                />
+
+                {/* Vote modal */}
+                <VoteModal
+                  open={!!voteTarget}
+                  title={voteTarget?.movie?.title}
+                  posterPath={
+    voteTarget?.movie?.poster_path ??
+    voteTarget?.movie?.poster ??       // fallback eventuale
+    null
+  }
+                  {...getAvgAndCount(voteTarget?.ratings)}
+                  initial={voteTarget?.ratings?.[user] ?? null}
+                  onClose={() => setVoteTarget(null)}
+                  onSave={(score) => {
+                    if (!voteTarget) return;
+                    const list = history.map((x) =>
+                      x.id === voteTarget.id
+                        ? { ...x, ratings: { ...(x.ratings || {}), [user]: score } }
+                        : x
+                    );
+                    setHistory(list);
+                    persistHistoryLive(list);
+                    setVoteTarget(null);
+                  }}
                 />
               </Card>
             </div>
