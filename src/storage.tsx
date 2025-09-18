@@ -1,61 +1,156 @@
+import { saveSharedState, loadSharedState } from "./state";
+import { sha256 } from "./Utils/hash"; // vedi helper sotto
 import { sb, STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY } from "./supabaseClient";
-import { loadSharedState, saveSharedState, subscribeSharedState } from "./state";
 
-type Viewings = any[];
 
-/** Crea il file live se non esiste (idempotente) */
+async function downloadJsonSafe<T = any>(bucket: string, key: string): Promise<T | null> {
+  try {
+    if (!sb) return null;
+    const { data, error } = await sb.storage.from(bucket).download(key);
+    if (error || !data) return null;
+    const txt = await data.text();
+    return JSON.parse(txt) as T;
+  } catch {
+    return null;
+  }
+}
+
+function buildBackupKey(prefix = "backups/history") {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(
+    d.getHours()
+  )}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+  return `${prefix}/${stamp}.json`;
+}
+
+// ============ API richieste ============
+
+/** Crea il file live/history.json se non esiste (inizialmente []) + 1 backup. */
 export async function ensureLiveFileExists(): Promise<void> {
-  const { data, error } = await sb.storage.from(STORAGE_BUCKET).list("", {
-    search: STORAGE_LIVE_HISTORY_KEY,
-  });
-  if (!error && data?.some(f => f.name === STORAGE_LIVE_HISTORY_KEY)) return;
+  if (!sb) return;
+  const current = await downloadJsonSafe<any[]>(STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY);
+  if (current) return;
 
-  await sb.storage.from(STORAGE_BUCKET).upload(
-    STORAGE_LIVE_HISTORY_KEY,
-    new Blob([JSON.stringify([])], { type: "application/json" }),
-    { upsert: true }
-  );
+  const initial: any[] = [];
+  const blob = new Blob([JSON.stringify(initial, null, 2)], { type: "application/json" });
+
+  await sb.storage.from(STORAGE_BUCKET).upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true });
+
+  // backup iniziale
+  const backupKey = buildBackupKey();
+  await sb.storage.from(STORAGE_BUCKET).upload(backupKey, blob, { upsert: false }).catch(() => {});
+
+  // aggiorna rev (facoltativo)
+  const state = await loadSharedState();
+  const nextRev = Number((state as any)?.history_live_rev || 0) + 1;
+  await saveSharedState({ history: initial, history_live_rev: nextRev }, { allowEmptyHistory: true });
 }
 
-/** Carica SEMPRE da history_live (no fallback a history/localStorage) */
-export async function loadHistoryLive(): Promise<Viewings> {
-  await ensureLiveFileExists();
-
-  const { data, error } = await sb.storage
-    .from(STORAGE_BUCKET)
-    .createSignedUrl(STORAGE_LIVE_HISTORY_KEY, 60);
-
-  if (error || !data?.signedUrl) return [];
-
-  const res = await fetch(data.signedUrl, { cache: "no-store" });
-  if (!res.ok) return [];
-  const json = await res.json();
-  return Array.isArray(json) ? json : (json?.viewings || []);
+/** Carica lo storico live; se fallisce ritorna []. */
+export async function loadHistoryLive(): Promise<any[]> {
+  const list = await downloadJsonSafe<any[]>(STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY);
+  return Array.isArray(list) ? list : [];
 }
 
-export async function persistHistoryLive(viewings: any[]): Promise<void> {
-  // ✅ Evita di salvare se l'array è vuoto o troppo piccolo
-  if (!Array.isArray(viewings) || viewings.length < 2) {
-    console.warn("⚠️ persistHistoryLive: tentato salvataggio vuoto o troppo piccolo, skip.");
+/**
+ * Salva lo storico:
+ * - Skippa se `viewings.length < minLength` (default 2), a meno che `allowDrasticDrop` sia true.
+ * - Skippa se identico all’ultimo (via hash).
+ * - Fa un backup con timestamp.
+ * - Aggiorna lo sharedState (history_live_rev).
+ */
+export async function persistHistoryLive(
+  viewings: any[],
+  opts: {
+    minLength?: number;
+    allowDrasticDrop?: boolean;
+    makeBackup?: boolean;
+  } = {}
+): Promise<void> {
+  const { minLength = 2, allowDrasticDrop = false, makeBackup = true } = opts;
+
+  if (!Array.isArray(viewings)) return;
+  if (viewings.length < minLength && !allowDrasticDrop) {
+    console.warn("⚠️ persistHistoryLive: array vuoto o troppo piccolo -> skip.");
     return;
   }
 
-  const blob = new Blob([JSON.stringify(viewings, null, 2)], { type: "application/json" });
-  await sb.storage
-    .from(STORAGE_BUCKET)
-    .upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true });
+  if (!sb) return; // offline: ci pensa il ramo localStorage in CinemaNightApp
 
-  const state = await loadSharedState();
-  const nextRev = Number((state as any)?.history_live_rev || 0) + 1;
-  await saveSharedState({ ...state, history_live_rev: nextRev });
+  try {
+    const prev = await downloadJsonSafe<any[]>(STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY);
+    const prevHash = prev ? await sha256(JSON.stringify(prev)) : null;
+    const nextHash = await sha256(JSON.stringify(viewings));
+
+    if (prevHash && prevHash === nextHash) {
+      // identico: aggiorno solo la rev per tenere i client in sync, senza scrivere lo storage
+      const state = await loadSharedState();
+      const nextRev = Number((state as any)?.history_live_rev || 0) + 1;
+      await saveSharedState(
+        { history: viewings, active: null, ratings: {}, history_live_rev: nextRev },
+        { allowEmptyHistory: allowDrasticDrop }
+      );
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(viewings, null, 2)], { type: "application/json" });
+    const up = await sb.storage.from(STORAGE_BUCKET).upload(STORAGE_LIVE_HISTORY_KEY, blob, { upsert: true });
+    if (up.error) {
+      console.error("[persistHistoryLive] upload error:", up.error);
+      throw up.error;
+    }
+
+    if (makeBackup) {
+      const backupKey = buildBackupKey();
+      await sb.storage.from(STORAGE_BUCKET).upload(backupKey, blob, { upsert: false }).catch(() => {});
+    }
+
+    const state = await loadSharedState();
+    const nextRev = Number((state as any)?.history_live_rev || 0) + 1;
+    await saveSharedState(
+      { history: viewings, active: null, ratings: {}, history_live_rev: nextRev },
+      { allowEmptyHistory: allowDrasticDrop }
+    );
+  } catch (err) {
+    console.error("[persistHistoryLive] fatal:", err);
+  }
 }
 
-export function subscribeHistoryLive(onChange: (v: any[]) => void): () => void {
-  // ✅ passa solo la callback (l'API accetta 1 argomento)
-  return subscribeSharedState(async (next) => {
-    if (typeof (next as any)?.history_live_rev !== "undefined") {
-      const v = await loadHistoryLive();
-      onChange(Array.isArray(v) ? v : []);
+/**
+ * Sottoscrizione “leggera” ai cambi del live history.
+ * Supabase Storage non ha Realtime sul file, quindi facciamo polling con ETag/hash.
+ * @returns unsubscribe()
+ */
+export function subscribeHistoryLive(
+  cb: (next: any[]) => void,
+  opts: { intervalMs?: number } = {}
+): () => void {
+  const { intervalMs = 5000 } = opts;
+  let alive = true;
+  let lastHash: string | null = null;
+
+  const tick = async () => {
+    if (!alive) return;
+    try {
+      const list = await loadHistoryLive();
+      const hash = await sha256(JSON.stringify(list));
+      if (hash !== lastHash) {
+        lastHash = hash;
+        cb(list);
+      }
+    } catch {
+      // ignore
+    } finally {
+      if (alive) setTimeout(tick, intervalMs);
     }
-  });
+  };
+
+  // avvio immediato
+  tick();
+
+  // unsubscribe
+  return () => {
+    alive = false;
+  };
 }

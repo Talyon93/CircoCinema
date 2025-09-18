@@ -28,6 +28,7 @@ import { ViewingModal } from "./Components/history/ViewingModal";
 import { Viewing } from "./types/viewing";
 import { roundToQuarter } from "./Utils/math";
 import { buildDenseRanking } from "./Utils/ranking";
+import { exportPeopleJSON, exportPeopleCSV, backfillPeopleAndSave } from "./ExportPeople";
 
 export default function CinemaNightApp() {
   const [user, setUser] = useState<string>("");
@@ -366,6 +367,61 @@ export default function CinemaNightApp() {
                       >
                         <ArrowDownTrayIcon className="h-6 w-6" />
                       </button>
+                      {/* Rebuild People (force) */}
+<button
+  onClick={async () => {
+    try {
+      if (!history || history.length === 0) {
+        alert("History vuota o non caricata.");
+        return;
+      }
+      const ok = confirm(
+        "Rebuild People (force): ricalcolo regista principale e top cast per TUTTI i film e salvo. Procedo?"
+      );
+      if (!ok) return;
+
+      const saveHistory = async (nextHistory: any[]) => {
+        if (sb) {
+          await persistHistoryLive(nextHistory);
+        } else {
+          lsSetJSON(K_VIEWINGS, nextHistory);
+        }
+      };
+
+      // forziamo il ricalcolo per TUTTI (onlyMissing: false)
+      const report = await backfillPeopleAndSave(history, saveHistory, {
+        throttleMs: 160,
+        onlyMissing: false,
+        logEvery: 5,
+        dryRun: false,
+      });
+
+      alert(
+        `Rebuild completato.\n` +
+        `Totale: ${report.total}\n` +
+        `Aggiornati: ${report.updated}\n` +
+        `Skippati: ${report.skipped}\n` +
+        `Salvato: ${report.saved ? "Sì" : "No"}`
+      );
+
+      // ricarica la history
+      if (sb) {
+        const live = await loadHistoryLive();
+        setHistory(Array.isArray(live) ? (live as Viewing[]) : []);
+      } else {
+        setHistory(lsGetJSON<Viewing[]>(K_VIEWINGS, []));
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Rebuild fallito. Controlla la console.");
+    }
+  }}
+  title="Rebuild People (force)"
+  aria-label="Rebuild People (force)"
+  className="p-2 rounded-lg bg-indigo-700/70 hover:bg-indigo-600 border border-indigo-600 shadow-sm"
+>
+  <span className="px-1 text-sm">Rebuild People</span>
+</button>
                     </div>
                   </div>
                 </div>

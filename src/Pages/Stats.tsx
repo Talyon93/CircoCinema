@@ -17,10 +17,8 @@ import { Achievements } from "../StatsKit/sections/Achievements";
 import { avgOf, pearson } from "../Utils/math";
 import { refScoreFor } from "../Utils/refScore";
 
-// icone
-import { BarChart3, User, Trophy, CalendarRange, Medal } from "lucide-react";
+import { BarChart3, User, Trophy, CalendarRange, Medal, Sparkles, Timer } from "lucide-react";
 
-// Recharts (per la sezione Anni/Decadi)
 import {
   ResponsiveContainer,
   BarChart,
@@ -29,7 +27,29 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  AreaChart,
+  Area,
 } from "recharts";
+
+/* ===================== UI helpers (solo per l'hero) ===================== */
+const cn = (...a: Array<string | false | null | undefined>) => a.filter(Boolean).join(" ");
+const Glass = ({ className = "", children }: { className?: string; children: React.ReactNode }) => (
+  <div className={cn("rounded-3xl border border-zinc-800/70 bg-zinc-950/70 ring-1 ring-black/5 shadow-[0_10px_30px_-15px_rgba(0,0,0,.7)] backdrop-blur", className)}>
+    {children}
+  </div>
+);
+function KPITile({
+  label, value, sub, gradient = "from-sky-400/25 via-fuchsia-400/20 to-emerald-400/20",
+}: { label: string; value: React.ReactNode; sub?: React.ReactNode; gradient?: string }) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-zinc-800/70 bg-zinc-900/60 p-4">
+      <div className={cn("pointer-events-none absolute -right-10 -top-10 h-36 w-36 rounded-full blur-2xl", `bg-gradient-to-br ${gradient}`)} />
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">{label}</div>
+      <div className="mt-1 text-3xl font-extrabold tracking-tight text-zinc-50">{value}</div>
+      {sub && <div className="mt-1 text-xs text-zinc-400">{sub}</div>}
+    </div>
+  );
+}
 
 /* ===================== Helpers locali ===================== */
 function stddev(values: number[]): number {
@@ -39,7 +59,7 @@ function stddev(values: number[]): number {
   return Math.sqrt(variance);
 }
 
-// Estrazione anno ultra-tollerante (supporta OMDb.Year, range "1995–1999", ecc.)
+// Estrazione anno ultra-tollerante
 function extractYear(v: any): number | null {
   const m = v?.movie ?? {};
   const candidates: Array<unknown> = [
@@ -52,11 +72,10 @@ function extractYear(v: any): number | null {
     m?.air_date,
     m?.premiere_date,
     m?.date,
-    m?.Year, // OMDb
+    m?.Year,
     m?.imdb?.year,
     m?.tmdb?.release_date,
   ];
-
   for (const c of candidates) {
     if (c == null) continue;
     if (typeof c === "number" && Number.isFinite(c)) {
@@ -64,7 +83,6 @@ function extractYear(v: any): number | null {
       continue;
     }
     if (typeof c === "string") {
-      // prendi la prima quadrupla di cifre valida come anno
       const m = c.match(/(\d{4})/);
       if (m) {
         const y = Number(m[1]);
@@ -75,7 +93,7 @@ function extractYear(v: any): number | null {
   return null;
 }
 
-/** Sezione: distribuzione per anno/decade – SOLO barre con count>0, niente lista sotto */
+/** Sezione: distribuzione per anno/decade – SOLO barre con count>0 */
 function YearsSection({
   years,
   decades,
@@ -215,7 +233,7 @@ export function Stats({
       if (name) genreCount.set(name, (genreCount.get(name) || 0) + 1);
     });
 
-    // Year (robusto)
+    // Year
     const year = extractYear(v);
     if (year != null) yearCount.set(year, (yearCount.get(year) || 0) + 1);
 
@@ -315,7 +333,7 @@ export function Stats({
   const groupClosest = groupRows.slice().sort((a, b) => a.diff - b.diff).slice(0, 5);
   const groupFarthest = groupRows.slice().sort((a, b) => b.diff - a.diff).slice(0, 5);
 
-  // Achievements
+  // Achievements (come nel tuo file)
   const weekMs = 7 * 24 * 3600 * 1000;
   const sortedByTime = history.slice().filter(v => v.started_at).sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
   const buckets = new Map<number, number[]>();
@@ -326,35 +344,18 @@ export function Stats({
     const arr = buckets.get(w) || []; arr.push(a); buckets.set(w, arr);
   }
   const weeklyAvg = Array.from(buckets, ([w, arr]) => ({ w, avg: (arr.reduce((x, y) => x + y, 0) / arr.length) })).sort((a, b) => a.w - b.w);
-  const streakThreshold = 7.5;
-  let bestStreak = 0, cur = 0;
-  for (const w of weeklyAvg) { if (w.avg >= streakThreshold) { cur++; bestStreak = Math.max(bestStreak, cur); } else cur = 0; }
-  const recordNight = movieStats.length ? movieStats.reduce((best, m) => (m.avg > best.avg ? m : best), movieStats[0]) : null;
   const milestones: string[] = [];
   if (history.length >= 50) milestones.push("🎉 50° film");
   if (history.length >= 100) milestones.push("🏆 100° film");
-  const pickerCounts = new Map<string, number>();
-  for (const m of movieStats) { if (m.picked_by) pickerCounts.set(m.picked_by, (pickerCounts.get(m.picked_by) || 0) + 1); }
-  for (const [u, c] of pickerCounts) if (c >= 10) milestones.push(`🎬 ${u}: 10ª scelta`);
 
-  // Records extra
-  const mostVoted = movieStats.length
-    ? movieStats.reduce((a, b) => (b.votes > a.votes ? b : a), movieStats[0])
-    : null;
-  const longest = movieStats.length
-    ? movieStats.reduce((a, b) => ((b.runtime || 0) > (a.runtime || 0) ? b : a), movieStats[0])
-    : null;
-  const shortest = movieStats.length
-    ? movieStats.reduce((a, b) => ((b.runtime ?? Number.POSITIVE_INFINITY) < (a.runtime ?? Number.POSITIVE_INFINITY) ? b : a), movieStats[0])
-    : null;
-  const mostDivisive = movieStats.length
-    ? movieStats.map((m) => ({ m, sd: stddev(m.scores || []) })).sort((x, y) => y.sd - x.sd)[0]?.m ?? null
-    : null;
+  // === Dati per HERO ===
+  const participants = givenMap.size; // utenti che hanno votato almeno una volta
+  const sparkData = timelineSorted.map(d => ({ t: d.t, y: d.avg }));
+  const distinctGenres = genresArr.length;
+  const totalVotes = history.reduce((acc, v) => acc + Object.keys(v?.ratings || {}).length, 0);
 
   // ===================== TABS =====================
   const [tab, setTab] = React.useState<"general" | "personal" | "achievements">("general");
-
-  // gestione tastiera (←/→ per cambiare tab)
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -370,7 +371,33 @@ export function Stats({
 
   return (
     <div className="space-y-6">
-      {/* Selettore tab */}
+      {/* ===================== HERO (NUOVO) ===================== */}
+      <Glass className="relative px-5 py-6">
+        <div className="min-w-0">
+          <div className="inline-flex items-center gap-2 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[11px] uppercase tracking-wider text-sky-300">
+            <Sparkles className="h-3.5 w-3.5" />
+            Live Circo Cinema stats
+          </div>
+          <h1 className="mt-2 text-3xl font-extrabold leading-tight text-zinc-50">Dashboard</h1>
+          <p className="mt-1 text-sm text-zinc-400">Ratings, trends, and discoveries from your screenings.</p>
+        </div>
+
+        {/* KPI tiles (non toccano le tab) */}
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <KPITile label="Total movies" value={history.length} gradient="from-sky-400/25 via-sky-300/15 to-transparent" />
+          <KPITile
+            label="Minutes watched"
+            value={<>{totalMinutesKnown ? `${totalMinutes}` : "—"} <span className="text-base font-semibold">min</span></>}
+            sub={totalMinutesKnown ? `${totalMinutesKnown} film` : undefined}
+            gradient="from-rose-400/25 via-fuchsia-300/15 to-transparent"
+          />
+          <KPITile label="Distinct genres" value={distinctGenres} gradient="from-emerald-400/25 via-emerald-300/15 to-transparent" />
+          <KPITile label="Total votes" value={totalVotes} gradient="from-indigo-400/25 via-indigo-300/15 to-transparent" />
+          <KPITile label="Participants" value={participants} gradient="from-amber-400/25 via-amber-300/15 to-transparent" />
+        </div>
+      </Glass>
+
+      {/* ===================== Selettore tab (INVARIATO) ===================== */}
       <div className="flex justify-center">
         <div
           role="tablist"
@@ -422,66 +449,51 @@ export function Stats({
         </div>
       </div>
 
-      {/* Contenuto tab */}
+      {/* ===================== Contenuto tab (TUTTO COME PRIMA) ===================== */}
       {tab === "general" && (
-  <div className="space-y-6">
-    {/* KPI */}
-    <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
-      <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
-        <BarChart3 className="h-5 w-5 opacity-80" />
-        Key indicators
-      </h2>
-      <KpiRow
-        totalMovies={history.length}
-        minutesLabel={minutesLabel}
-        distinctGenres={genresArr.length}
-        totalVotes={history.reduce((acc, v) => acc + Object.keys(v?.ratings || {}).length, 0)}
-        isLoading={isLoading}
-      />
-    </section>
+        <div className="space-y-6">
+          {/* Timeline */}
+          <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
+              <CalendarRange className="h-5 w-5 opacity-80" />
+              Trend over time
+            </h2>
+            <Timeline data={timelineMain.slice().sort((a, b) => a.t - b.t)} />
+            <ImdbDelta data={timelineDelta.slice().sort((a, b) => a.t - b.t)} />
+          </section>
 
-    {/* Timeline */}
-    <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
-      <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
-        <CalendarRange className="h-5 w-5 opacity-80" />
-        Trend over time
-      </h2>
-      <Timeline data={timelineMain.slice().sort((a, b) => a.t - b.t)} />
-      <ImdbDelta data={timelineDelta.slice().sort((a, b) => a.t - b.t)} />
-    </section>
+          {/* Runtime + distribuzioni */}
+          <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
+              <Medal className="h-5 w-5 opacity-80" />
+              Distributions & similarity
+            </h2>
+            <ScatterRuntimeSection
+              points={movieStats
+                .filter(m => Number.isFinite(m.runtime) && Number.isFinite(m.avg))
+                .map(m => ({ x: m.runtime as number, y: m.avg, size: m.votes, title: m.title }))}
+            />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <DistributionInsightSection values={beeswarmValues.map(v => v.score)} />
+              <SimilarityMatrixSection users={Array.from(new Set(userOrder))} cells={cellsOrdered} />
+            </div>
+          </section>
 
-    {/* Runtime + distribuzioni */}
-    <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
-      <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
-        <Medal className="h-5 w-5 opacity-80" />
-        Distributions & similarity
-      </h2>
-      <ScatterRuntimeSection
-        points={movieStats
-          .filter(m => Number.isFinite(m.runtime) && Number.isFinite(m.avg))
-          .map(m => ({ x: m.runtime as number, y: m.avg, size: m.votes, title: m.title }))}
-      />
-      <div className="grid gap-4 lg:grid-cols-2">
-        <DistributionInsightSection values={beeswarmValues.map(v => v.score)} />
-        <SimilarityMatrixSection users={Array.from(new Set(userOrder))} cells={cellsOrdered} />
-      </div>
-    </section>
+          {/* Generi e anni */}
+          <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
+            <Genres items={genresArr} isLoading={isLoading} />
+            <YearsSection years={yearsArr} decades={decadesArr} />
+          </section>
 
-    {/* Generi e anni */}
-    <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
-      <Genres items={genresArr} isLoading={isLoading} />
-      <YearsSection years={yearsArr} decades={decadesArr} />
-    </section>
-
-    {/* Leaderboards & Top/Flop */}
-    <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
-      <Leaderboards givenArr={givenArr} isLoading={isLoading} />
-      <PickerAverages items={receivedArr} isLoading={isLoading} />
-      <TopFlop bestMovies={bestMovies} worstMovies={worstMovies} isLoading={isLoading} />
-      <GroupImdb closest={groupClosest} farthest={groupFarthest} />
-    </section>
-  </div>
-)}
+          {/* Leaderboards & Top/Flop */}
+          <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
+            <Leaderboards givenArr={givenArr} isLoading={isLoading} />
+            <PickerAverages items={receivedArr} isLoading={isLoading} />
+            <TopFlop bestMovies={bestMovies} worstMovies={worstMovies} isLoading={isLoading} />
+            <GroupImdb closest={groupClosest} farthest={groupFarthest} />
+          </section>
+        </div>
+      )}
 
       {tab === "personal" && selectedUser && (
         <div className="grid gap-5">
@@ -492,7 +504,7 @@ export function Stats({
             userGenreLikes={userGenreLikes}
             selectedUser={selectedUser}
             onSelectUser={(u) => setSelectedUser(u)}
-            userOptions={userOptions}
+            userOptions={Array.from(new Set([...givenArr.map(x => x.user), ...receivedArr.map(x => x.user)])).sort((a, b) => a.localeCompare(b))}
           />
         </div>
       )}
@@ -506,9 +518,19 @@ export function Stats({
         />
       )}
 
-      <p className="text-xs text-zinc-500">
-        * Total minutes consider only films with known runtime (TMDB). IMDb delta is calculated on films with an available IMDb rating.
-      </p>
+      {/* mobile dock (decorativo) */}
+      <div className="fixed inset-x-3 bottom-3 z-20 block md:hidden">
+        <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/80 px-3 py-2 text-[11px] text-zinc-300 shadow-lg backdrop-blur">
+          <div className="flex items-center justify-between">
+            <span className="inline-flex items-center gap-1">
+              <BarChart3 className="h-3.5 w-3.5 opacity-80" /> {history.length} movies
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Timer className="h-3.5 w-3.5 opacity-80" /> {minutesLabel}
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -18,6 +18,7 @@ import {
   ClockIcon,
   Bars3CenterLeftIcon,
 } from "@heroicons/react/24/outline";
+import { Avatar } from "../../Components/UI/Avatar"; // ⟵ usa il tuo Avatar
 
 /* ===================== InfoBadge (stile UserPanelClassic) ===================== */
 function InfoBadge({ text, className = "" }: { text: string; className?: string }) {
@@ -45,22 +46,26 @@ type NormViewing = {
   avg: number; // NaN se zero voti
   std?: number;
   imdb?: number | null;
+  poster?: string | null;
+  runtime?: number | null;
   date?: string | null;
 };
 
 function normalizeViewing(v: any): NormViewing | null {
   if (!v) return null;
   const title = v?.movie?.title ?? v?.title ?? "(sconosciuto)";
-  const year = v?.movie?.year ?? v?.year ?? undefined;
+  const year = readYear(v);
   const picker = v?.picked_by ?? v?.picker ?? v?.owner ?? v?.added_by ?? null;
   const ratings: Record<string, number> = v?.ratings ?? v?.votes ?? {};
   const scores = Object.values(ratings).map(toNum).filter(isFiniteNum);
 
   const imdb = readImdb(v);
   const date = readDate(v);
+  const runtime = readRuntime(v);
+  const poster = readPoster(v);
 
   if (!scores.length) {
-    return { title, year, picker, ratings: {}, numVotes: 0, avg: NaN, std: undefined, imdb, date };
+    return { title, year, picker, ratings: {}, numVotes: 0, avg: NaN, std: undefined, runtime, poster, imdb, date };
   }
   const a = avg(scores);
   const s2 = variance(scores);
@@ -73,6 +78,8 @@ function normalizeViewing(v: any): NormViewing | null {
     avg: a,
     std: Math.sqrt(s2),
     imdb,
+    poster,
+    runtime,
     date,
   };
 }
@@ -87,9 +94,129 @@ function readImdb(v: any): number | null {
   const n = raw != null ? Number(raw) : null;
   return n != null && Number.isFinite(n) ? n : null;
 }
+
+function readYear(v: any): number | undefined {
+  const current = new Date().getFullYear();
+  const inRange = (n: number) => Number.isFinite(n) && n >= 1888 && n <= current + 1;
+
+  const candidates: any[] = [
+    v?.movie?.year,
+    v?.movie?.Year,
+    v?.movie?.releaseYear,
+    v?.movie?.release_year,
+    v?.movie?.releaseDate,
+    v?.movie?.release_date,
+    v?.movie?.released,
+    v?.meta?.year,
+    v?.meta?.release_year,
+    v?.meta?.omdb?.Year,
+    v?.meta?.omdb?.Released,
+    v?.meta?.imdb?.Year,
+    v?.omdb?.Year,
+    v?.omdb?.Released,
+    v?.year,
+    v?.release_year,
+    v?.released,
+  ].filter((x) => x != null);
+
+  const tryParse = (c: any): number | undefined => {
+    if (typeof c === "number") return inRange(c) ? c : undefined;
+    if (typeof c === "string") {
+      const iso = c.match(/^(?<y>\d{4})-\d{2}-\d{2}$/)?.groups?.y;
+      if (iso) {
+        const n = Number(iso);
+        return inRange(n) ? n : undefined;
+      }
+      const m = c.match(/(18|19|20|21)\d{2}/);
+      if (m) {
+        const n = Number(m[0]);
+        return inRange(n) ? n : undefined;
+      }
+      const n = Number(c.trim());
+      return inRange(n) ? n : undefined;
+    }
+    return undefined;
+  };
+
+  for (const c of candidates) {
+    const n = tryParse(c);
+    if (n !== undefined) return n;
+  }
+
+  const maybeTitle = v?.movie?.title ?? v?.title ?? "";
+  if (typeof maybeTitle === "string") {
+    const m = maybeTitle.match(/\((?<y>(18|19|20|21)\d{2})\)/)?.groups?.y;
+    if (m) {
+      const n = Number(m);
+      if (inRange(n)) return n;
+    }
+  }
+  return undefined;
+}
+
 function readDate(v: any): string | null {
   return v?.started_at ?? v?.date ?? v?.created_at ?? null;
 }
+
+const TMDB_BASE = "https://image.tmdb.org/t/p/";
+function tmdbUrl(path?: string | null, size: "w92" | "w154" | "w185" | "w342" | "w500" | "w780" | "original" = "w185") {
+  if (!path) return null;
+  const s = String(path).trim();
+  if (!s) return null;
+  if (s.startsWith("http")) return s;           // già una URL completa
+  if (s.startsWith("/")) return `${TMDB_BASE}${size}${s}`; // path TMDB
+  return null; // non riconosciuto
+}
+
+function readPoster(v: any): string | null {
+  // candidati più comuni nelle tue history
+  const candidates = [
+    v?.movie?.poster_path,
+    v?.poster_path,
+    v?.movie?.posterUrl,
+    v?.movie?.posterURL,
+    v?.poster_url,
+    v?.posterURL,
+    v?.movie?.poster,          // può essere path o URL
+    v?.movie?.Poster,          // OMDb
+    v?.meta?.poster,
+    v?.meta?.omdb?.Poster,
+    v?.omdb?.Poster,
+    v?.poster,
+  ];
+
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const s = String(raw).trim();
+    // 1) Se è già una URL http(s), usala e basta
+    if (s.startsWith("http")) return s;
+    // 2) Se è un path TMDB ("/abc123.jpg"), costruisci la URL
+    if (s.startsWith("/")) {
+      const url = tmdbUrl(s, "w185");
+      if (url) return url;
+    }
+  }
+  return null;
+}
+
+function readRuntime(v: any): number | null {
+  const raw =
+    v?.movie?.runtime ??
+    v?.meta?.runtime ??
+    v?.omdb?.Runtime ??
+    v?.runtime ??
+    null;
+  if (raw == null) return null;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string") {
+    const m = raw.match(/(\d+)\s*min/i);
+    if (m) return Number(m[1]);
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 function toShortDate(iso: string) {
   try {
     const d = new Date(iso);
@@ -150,14 +277,16 @@ function mapValues<T extends Record<string, any>, R>(obj: T, f: (v: any, k: stri
   for (const k of Object.keys(obj)) out[k] = f(obj[k], k);
   return out;
 }
-function topLabelCount(counter: Record<string, number>) {
-  const entries = Object.entries(counter);
+function topLabelCount(counter: Record<string, number>, eligible?: Set<string>) {
+  const entries = Object.entries(counter).filter(([k]) => !eligible || eligible.has(k));
   if (!entries.length) return null;
   const best = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
   return { label: best[0], count: best[1] };
 }
-function topLabelAvg(buckets: Record<string, number[]>, mode: "max" | "min") {
-  const entries = Object.entries(buckets).filter(([, arr]) => arr.length > 0);
+function topLabelAvg(buckets: Record<string, number[]>, mode: "max" | "min", eligible?: Set<string>) {
+  const entries = Object.entries(buckets).filter(
+    ([k, arr]) => arr.length > 0 && (!eligible || eligible.has(k))
+  );
   if (!entries.length) return null;
   const withAvg = entries.map(([k, arr]) => [k, avg(arr)] as const);
   const best =
@@ -171,32 +300,51 @@ function normalizeName(s: string) {
 }
 
 /* =========================================
-   YEARLY — definita PRIMA, così è sempre disponibile
+   YEARLY — definita PRIMA
 ========================================= */
-function computeYearly(items: NormViewing[], minVotesForUserStats: number) {
+function computeYearly(
+  items: NormViewing[],
+  minRatingsForUserStats: number,
+  minPicksForPickerStats: number,
+) {
   if (!items.length) return null;
   const bestFilm = maxBy(items.filter(hasVotes), (v) => v.avg);
 
   const pickerAvg: Record<string, number[]> = {};
   const presence: Record<string, number> = {};
+  const picksCount: Record<string, number> = {};
 
   for (const v of items) {
     Object.keys(v.ratings).forEach((u) => (presence[u] = (presence[u] ?? 0) + 1));
-    if (v.picker && hasVotes(v)) (pickerAvg[v.picker] ??= []).push(v.avg);
+    if (v.picker) {
+      picksCount[v.picker] = (picksCount[v.picker] ?? 0) + 1;
+      if (hasVotes(v)) (pickerAvg[v.picker] ??= []).push(v.avg);
+    }
   }
 
-  const mvp = topLabelAvg(pickerAvg, "max");
-  const mostPresence = topLabelCount(presence);
+  const eligiblePickers = new Set(
+    Object.keys(picksCount).filter((p) => (picksCount[p] ?? 0) >= minPicksForPickerStats)
+  );
+  const mvp = topLabelAvg(pickerAvg, "max", eligiblePickers);
+
+  const userGiven: Record<string, number[]> = {};
+  for (const v of items) {
+    Object.entries(v.ratings).forEach(([u, s]) => (userGiven[u] ??= []).push(s));
+  }
+  const eligibleUsers = new Set(
+    Object.keys(userGiven).filter((u) => (userGiven[u]?.length ?? 0) >= minRatingsForUserStats)
+  );
+  const mostPresence = topLabelCount(presence, eligibleUsers);
 
   return {
-    bestFilm: bestFilm && { label: bestFilm.title, value: bestFilm.avg },
+    bestFilm: bestFilm && { label: bestFilm.title, value: bestFilm.avg, img: bestFilm.poster ?? null },
     mvpPicker: mvp,
     mostPresence,
   };
 }
 
 /* =========================================
-   Calcolo “tuo film preferito” — usa SOLO current user/alias
+   Calcolo “tuo film preferito”
 ========================================= */
 function bestForCurrentUser(items: NormViewing[], aliases: string[]) {
   if (!aliases.length) return null;
@@ -246,7 +394,7 @@ function safeGetUserFromLS(keys: string[]): string {
     try {
       const v = window.localStorage.getItem(k);
       if (v && v.trim()) return v.trim();
-    } catch {}
+    } catch { }
   }
   return "";
 }
@@ -256,7 +404,8 @@ function safeGetUserFromLS(keys: string[]): string {
 ========================================= */
 type Props = {
   history?: any[];
-  minVotesForUserStats?: number;
+  minRatingsForUserStats?: number;   // default 10
+  minPicksForPickerStats?: number;   // default 3
   autoLoad?: boolean;
   currentUser?: string;
   currentUserAliases?: string[];
@@ -267,7 +416,8 @@ type Props = {
 ========================================= */
 export function Achievements({
   history,
-  minVotesForUserStats = 5,
+  minRatingsForUserStats = 10,
+  minPicksForPickerStats = 3,
   autoLoad = true,
   currentUser,
   currentUserAliases = [],
@@ -275,12 +425,10 @@ export function Achievements({
   const [autoHistory, setAutoHistory] = React.useState<any[] | null>(null);
   const [lsMod, setLsMod] = React.useState<LSModule | null>(null);
 
-  // Carica modulo localStorage (opzionale)
   React.useEffect(() => {
     loadLocalStorageModule().then(setLsMod);
   }, []);
 
-  // Autoload (live -> localStorage)
   React.useEffect(() => {
     let mounted = true;
     if (!autoLoad) return;
@@ -288,7 +436,6 @@ export function Achievements({
     if (hasIncoming) return;
 
     (async () => {
-      // 1) LIVE
       try {
         const mod = await import("../../storage");
         if (mod?.ensureLiveFileExists) await mod.ensureLiveFileExists();
@@ -299,7 +446,6 @@ export function Achievements({
         });
         return () => { if (typeof unsub === "function") unsub(); };
       } catch {
-        // 2) Fallback: localStorage
         const KEY = (lsMod?.K_VIEWINGS as string) || "CN_VIEWINGS";
         const lsGet = lsMod?.lsGetJSON
           ? () => lsMod!.lsGetJSON!(KEY, [] as any[])
@@ -322,7 +468,6 @@ export function Achievements({
     return () => { mounted = false; };
   }, [autoLoad, history, lsMod]);
 
-  // Current user affidabile
   const effectiveUser = React.useMemo(() => {
     if (currentUser && String(currentUser).trim()) return currentUser.trim();
     const key = (lsMod?.K_USER as string) || "CN_USER";
@@ -330,7 +475,7 @@ export function Achievements({
       try {
         const u = lsMod.lsGetJSON<string>(key, "");
         if (u && u.trim()) return u.trim();
-      } catch {}
+      } catch { }
     }
     const fallback = safeGetUserFromLS([key, "USER"]);
     return fallback;
@@ -348,11 +493,15 @@ export function Achievements({
   }, [history, autoHistory]);
 
   const data = React.useMemo(
-    () => computeHallOfFame(effectiveHistory, minVotesForUserStats, effectiveAliases),
-    [effectiveHistory, minVotesForUserStats, effectiveAliases]
+    () =>
+      computeHallOfFame(
+        effectiveHistory,
+        minRatingsForUserStats,
+        minPicksForPickerStats,
+        effectiveAliases
+      ),
+    [effectiveHistory, minRatingsForUserStats, minPicksForPickerStats, effectiveAliases]
   );
-
-  const nMin = minVotesForUserStats;
 
   return (
     <Card>
@@ -361,78 +510,339 @@ export function Achievements({
         Hall of Fame
       </h3>
 
-      {/* Podio */}
-      <Section title="🥇 Podio" gridClassName="grid gap-3 sm:grid-cols-1">
+      {/* Podium */}
+      <Section title="🥇 Podium" gridClassName="grid gap-3 sm:grid-cols-1">
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+<Podium
+  title="Top 3 movies"
+  hint="The three movies with the highest internal average rating. In case of a tie, the one with more votes wins."
+  accent="amber"
+  items={(data.top3Films ?? []).map((f) => ({
+    label: f.title,
+    subLeft: `${f.numVotes} votes`,
+    right: `avg ${formatScore(f.avg)}`,
+    img: (f as any).img ?? null,
+  }))}
+/>
+
           <Podium
-            title="Top 3 film (media)"
-            hint="I tre film con la media voti interna più alta (a parità di media, vince chi ha più voti)."
-            items={(data.top3Films ?? []).map((f) => ({
-              label: f.title,
-              sub: `media ${formatScore(f.avg)} — ${f.numVotes} voti`,
-            }))}
-          />
-          <Podium
-            title="Top 3 picker (media ricevuta)"
-            hint="I tre proponenti con la media più alta sui film scelti (considera tutte le loro proposte)."
-            items={(data.top3Pickers ?? []).map((p) => ({
-              label: p.picker,
-              sub: `media ${formatScore(p.avg)} su ${p.count} film`,
-            }))}
-          />
+  title="Top 3 pickers"
+  hint="Pickers ranked by the average of the ratings received by their movies. Only eligible pickers are considered."
+  accent="amber"
+  items={(data.top3Pickers ?? []).map((p) => ({
+    label: p.picker,
+    subLeft: `${p.count} movies`,
+    right: `avg ${formatScore(p.avg)}`,
+    // usa il tuo Avatar così compaiono le foto (es. Gnevas)
+    thumb: <Avatar name={p.picker} size={36} />,
+  }))}
+/>
         </div>
       </Section>
 
-      {/* Film & Voti */}
-      <Section title="🎬 Film & Voti">
-        <Badge icon={TrophyIcon} color="amber" label="Miglior film" value={data.bestFilm?.label ?? "—"} sub={scoreSub(data.bestFilm?.value)} hint="Film con la media voti interna più alta." />
-        <Badge icon={XCircleIcon} color="rose" label="Peggior film" value={data.worstFilm?.label ?? "—"} sub={scoreSub(data.worstFilm?.value)} hint="Film con la media voti interna più bassa." />
-        <Badge icon={UsersIcon} color="indigo" label="Film più votato" value={data.mostVotedFilm?.label ?? "—"} sub={countSub(data.mostVotedFilm?.count, "voti")} hint="Film che ha ricevuto più voti in una serata (più presenze)." />
-        <Badge icon={ChartBarIcon} color="fuchsia" label="Film più divisivo" value={data.mostDivisiveFilm?.label ?? "—"} sub={stdSub(data.mostDivisiveFilm?.std)} hint="Film con la deviazione standard più alta tra i voti (opinioni più distanti)." />
-        <Badge icon={StarIcon} color="emerald" label="Film più amato da te" value={data.yourFavFilm?.label ?? "—"} sub={scoreSub(data.yourFavFilm?.value)} hint="Il film a cui TU hai dato il voto più alto (alias inclusi)." />
+      {/* Movies & Votes */}
+      <Section title="🎬 Movies & Votes">
+        <Badge
+          icon={TrophyIcon}
+          color="amber"
+          label="Best movie"
+          value={data.bestFilm?.label ?? "—"}
+          sub={scoreSub(data.bestFilm?.value)}
+          hint="Movie with the highest internal average rating."
+          leftSlot={<PosterThumb src={data.bestFilm?.img} alt={data.bestFilm?.label} />}
+        />
+        <Badge
+          icon={XCircleIcon}
+          color="rose"
+          label="Worst movie"
+          value={data.worstFilm?.label ?? "—"}
+          sub={scoreSub(data.worstFilm?.value)}
+          hint="Movie with the lowest internal average rating."
+          leftSlot={<PosterThumb src={data.worstFilm?.img} alt={data.worstFilm?.label} />}
+        />
+        <Badge
+          icon={UsersIcon}
+          color="indigo"
+          label="Most voted movie"
+          value={data.mostVotedFilm?.label ?? "—"}
+          sub={countSub(data.mostVotedFilm?.count, "votes")}
+          hint="Movie that received the highest number of votes in a single night."
+          leftSlot={<PosterThumb src={data.mostVotedFilm?.img} alt={data.mostVotedFilm?.label} />}
+        />
+        <Badge
+          icon={ChartBarIcon}
+          color="fuchsia"
+          label="Most divisive movie"
+          value={data.mostDivisiveFilm?.label ?? "—"}
+          sub={stdSub(data.mostDivisiveFilm?.std)}
+          hint="Movie with the highest standard deviation among ratings."
+          leftSlot={<PosterThumb src={data.mostDivisiveFilm?.img} alt={data.mostDivisiveFilm?.label} />}
+        />
+        <Badge
+          icon={ClockIcon}
+          color="slate"
+          label="Longest movie"
+          value={data.longestFilm?.label ?? "—"}
+          sub={data.longestFilm ? `${data.longestFilm.minutes} min` : undefined}
+          hint="The movie with the longest runtime."
+          leftSlot={<PosterThumb src={data.longestFilm?.img} alt={data.longestFilm?.label} />}
+        />
+        <Badge
+          icon={ClockIcon}
+          color="slate"
+          label="Shortest movie"
+          value={data.shortestFilm?.label ?? "—"}
+          sub={data.shortestFilm ? `${data.shortestFilm.minutes} min` : undefined}
+          hint="The movie with the shortest runtime."
+          leftSlot={<PosterThumb src={data.shortestFilm?.img} alt={data.shortestFilm?.label} />}
+        />
+        <Badge
+          icon={AcademicCapIcon}
+          color="slate"
+          label="Oldest movie"
+          value={data.oldestFilm?.label ?? "—"}
+          sub={data.oldestFilm ? `${data.oldestFilm.year}` : undefined}
+          hint="The movie with the earliest release year."
+          leftSlot={<PosterThumb src={data.oldestFilm?.img} alt={data.oldestFilm?.label} />}
+        />
+        <Badge
+          icon={AcademicCapIcon}
+          color="slate"
+          label="Newest movie"
+          value={data.newestFilm?.label ?? "—"}
+          sub={data.newestFilm ? `${data.newestFilm.year}` : undefined}
+          hint="The most recent release watched."
+          leftSlot={<PosterThumb src={data.newestFilm?.img} alt={data.newestFilm?.label} />}
+        />
       </Section>
 
-      {/* Persone & Presenze */}
-      <Section title="👥 Persone & Presenze">
-        <Badge icon={UsersIcon} color="sky" label="Più presenze" value={data.mostPresence?.label ?? "—"} sub={countSub(data.mostPresence?.count, "presenze")} hint="Chi ha partecipato e votato più volte in totale." />
-        <Badge icon={BoltIcon} color="yellow" label="Più film proposti" value={data.mostPicks?.label ?? "—"} sub={countSub(data.mostPicks?.count, "film")} hint="Chi ha portato il maggior numero di film." />
-        <Badge icon={ArrowTrendingUpIcon} color="green" label="Voti più alti ricevuti (picker)" value={data.highestAvgReceived?.label ?? "—"} sub={scoreSub(data.highestAvgReceived?.value, "media ricevuta")} hint="Media dei voti ottenuti dai film scelti dal proponente (più alto = meglio)." />
-        <Badge icon={ArrowTrendingDownIcon} color="red" label="Voti più bassi ricevuti (picker)" value={data.lowestAvgReceived?.label ?? "—"} sub={scoreSub(data.lowestAvgReceived?.value, "media ricevuta")} hint="Media dei voti ottenuti dai film scelti dal proponente (più basso = peggio)." />
-        <Badge icon={HeartIcon} color="pink" label='Record di "10" ricevuti' value={data.mostTensReceived?.label ?? "—"} sub={countSub(data.mostTensReceived?.count, "voti 10")} hint="Totale di 10 ricevuti dai film scelti da quel proponente (sommati su tutte le serate)." />
-        <Badge icon={XCircleIcon} color="orange" label='Record di "1" ricevuti' value={data.mostOnesReceived?.label ?? "—"} sub={countSub(data.mostOnesReceived?.count, "voti 1")} hint="Totale di 1 ricevuti dai film scelti da quel proponente (sommati su tutte le serate)." />
-        <Badge icon={Bars3CenterLeftIcon} color="slate" label="Top voter (più voti dati)" value={data.topVoter?.label ?? "—"} sub={countSub(data.topVoter?.count, "voti dati")} hint="La persona che ha espresso più voti complessivi (presenze attive)." />
+      {/* People & Attendance */}
+      <Section title="👥 People & Attendance">
+        <Badge
+          icon={UsersIcon}
+          color="sky"
+          label="Most attendance"
+          value={data.mostPresence?.label ?? "—"}
+          sub={countSub(data.mostPresence?.count, "attendances")}
+          hint="Who attended and voted the most among eligible users."
+          leftSlot={data.mostPresence?.label ? <Avatar name={data.mostPresence.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={BoltIcon}
+          color="yellow"
+          label="Most movies proposed"
+          value={data.mostPicks?.label ?? "—"}
+          sub={countSub(data.mostPicks?.count, "movies")}
+          hint="Who proposed the highest number of movies among eligible pickers."
+          leftSlot={data.mostPicks?.label ? <Avatar name={data.mostPicks.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ArrowTrendingUpIcon}
+          color="green"
+          label="Highest ratings received"
+          value={data.highestAvgReceived?.label ?? "—"}
+          sub={scoreSub(data.highestAvgReceived?.value, "average received")}
+          hint="Average ratings obtained by the picker’s movies. Higher is better."
+          leftSlot={data.highestAvgReceived?.label ? <Avatar name={data.highestAvgReceived.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ArrowTrendingDownIcon}
+          color="red"
+          label="Lowest ratings received"
+          value={data.lowestAvgReceived?.label ?? "—"}
+          sub={scoreSub(data.lowestAvgReceived?.value, "average received")}
+          hint="Average ratings obtained by the picker’s movies. Lower is worse."
+          leftSlot={data.lowestAvgReceived?.label ? <Avatar name={data.lowestAvgReceived.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ClockIcon}
+          color="slate"
+          label="Longest movies"
+          value={data.longestPicker?.label ?? "—"}
+          sub={data.longestPicker ? `${formatMaybe(data.longestPicker.minutes, 0)} min avg` : undefined}
+          hint="Picker whose movies have the longest average runtime."
+          leftSlot={data.longestPicker?.label ? <Avatar name={data.longestPicker.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ClockIcon}
+          color="slate"
+          label="Shortest movies"
+          value={data.shortestPicker?.label ?? "—"}
+          sub={data.shortestPicker ? `${formatMaybe(data.shortestPicker.minutes, 0)} min avg` : undefined}
+          hint="Picker whose movies have the shortest average runtime."
+          leftSlot={data.shortestPicker?.label ? <Avatar name={data.shortestPicker.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={HeartIcon}
+          color="pink"
+          label='Most "10s" received'
+          value={data.mostTensReceived?.label ?? "—"}
+          sub={countSub(data.mostTensReceived?.count, "10s")}
+          hint="Total number of 10s received by a picker’s movies across all nights. Only eligible pickers are considered."
+          leftSlot={data.mostTensReceived?.label ? <Avatar name={data.mostTensReceived.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={XCircleIcon}
+          color="orange"
+          label='Most "< 4" received'
+          value={data.mostOnesReceived?.label ?? "—"}
+          sub={countSub(data.mostOnesReceived?.count, "ratings < 4")}
+          hint="Total number of ratings below 4 received by a picker’s movies across all nights. Only eligible pickers are considered."
+          leftSlot={data.mostOnesReceived?.label ? <Avatar name={data.mostOnesReceived.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ArrowTrendingUpIcon}
+          color="emerald"
+          label="Most generous to self"
+          value={data.mostGenerousSelf?.label ?? "—"}
+          sub={data.mostGenerousSelf ? `+${formatMaybe(data.mostGenerousSelf.gap, 2)} vs avg` : undefined}
+          hint="Picker who rates their own movies higher compared to the group average."
+          leftSlot={data.mostGenerousSelf?.label ? <Avatar name={data.mostGenerousSelf.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ArrowTrendingDownIcon}
+          color="rose"
+          label="Most self-critical"
+          value={data.mostCriticalSelf?.label ?? "—"}
+          sub={data.mostCriticalSelf ? `${formatMaybe(data.mostCriticalSelf.gap, 2)} vs avg` : undefined}
+          hint="Picker who rates their own movies lower compared to the group average."
+          leftSlot={data.mostCriticalSelf?.label ? <Avatar name={data.mostCriticalSelf.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={Bars3CenterLeftIcon}
+          color="slate"
+          label="Top voter"
+          value={data.topVoter?.label ?? "—"}
+          sub={countSub(data.topVoter?.count, "ratings given")}
+          hint="The person who cast the most ratings among eligible users."
+          leftSlot={data.topVoter?.label ? <Avatar name={data.topVoter.label} size={36} /> : undefined}
+        />
       </Section>
 
-      {/* Serate */}
-      <Section title="🌙 Serate">
-        <Badge icon={UsersIcon} color="cyan" label="Serata più partecipata" value={data.nightMostParticipants?.label ?? "—"} sub={countSub(data.nightMostParticipants?.count, "votanti")} hint="La serata con il maggior numero di votanti." />
-        <Badge icon={ArrowTrendingUpIcon} color="lime" label="Serata con voti più alti" value={data.nightHighestAvg?.label ?? "—"} sub={scoreSub(data.nightHighestAvg?.value)} hint="La serata con la media dei voti più alta." />
-        <Badge icon={ArrowTrendingDownIcon} color="violet" label="Serata con voti più bassi" value={data.nightLowestAvg?.label ?? "—"} sub={scoreSub(data.nightLowestAvg?.value)} hint="La serata con la media dei voti più bassa." />
-        <Badge icon={AcademicCapIcon} color="slate" label="Prima serata" value={data.firstNight?.label ?? "—"} sub={data.firstNight?.date ?? undefined} hint="La prima serata registrata nello storico." />
-        <Badge icon={FireIcon} color="red" label="Record Night" value={data.recordNight?.label ?? "—"} sub={scoreSub(data.recordNight?.value)} hint="La migliore media serata di sempre." />
+      {/* Nights */}
+      <Section title="🌙 Nights">
+        <Badge
+          icon={UsersIcon}
+          color="cyan"
+          label="Most attended night"
+          value={data.nightMostParticipants?.label ?? "—"}
+          sub={countSub(data.nightMostParticipants?.count, "voters")}
+          hint="The night with the highest number of voters."
+          leftSlot={<PosterThumb src={data.nightMostParticipants?.img} alt={data.nightMostParticipants?.label} />}
+        />
+        <Badge
+          icon={UsersIcon}
+          color="cyan"
+          label="Least attended night"
+          value={data.nightLeastParticipants?.label ?? "—"}
+          sub={countSub(data.nightLeastParticipants?.count, "voters")}
+          hint="The night with the lowest number of voters."
+          leftSlot={
+            <PosterThumb
+              src={data.nightLeastParticipants?.img}
+              alt={data.nightLeastParticipants?.label}
+            />
+          }
+        />
+
+        <Badge
+          icon={AcademicCapIcon}
+          color="slate"
+          label="First night"
+          value={data.firstNight?.label ?? "—"}
+          sub={data.firstNight?.date ?? undefined}
+          hint="The first recorded night."
+          leftSlot={<PosterThumb src={data.firstNight?.img} alt={data.firstNight?.label} />}
+        />
       </Section>
 
-      {/* Profili */}
-      <Section title="🏅 Profili">
-        <Badge icon={ClockIcon} color="teal" label="Mr. Consistency" value={data.mrConsistency?.label ?? "—"} sub={stdSub(data.mrConsistency?.std)} hint={`Utente con la minore variabilità nei voti dati (almeno ${nMin} voti).`} />
-        <Badge icon={ArrowTrendingDownIcon} color="rose" label="Mr. Critico" value={data.mrCritic?.label ?? "—"} sub={scoreSub(data.mrCritic?.value, "media data")} hint={`Utente con la media dei voti più bassa tra quelli che hanno dato almeno ${nMin} voti.`} />
-        <Badge icon={ArrowTrendingUpIcon} color="emerald" label="Mr. Generoso" value={data.mrGenerous?.label ?? "—"} sub={scoreSub(data.mrGenerous?.value, "media data")} hint={`Utente con la media dei voti più alta tra quelli che hanno dato almeno ${nMin} voti.`} />
+      {/* Profiles */}
+      <Section title="🏅 Profiles">
+        <Badge
+          icon={ClockIcon}
+          color="teal"
+          label="Mr. Consistency"
+          value={data.mrConsistency?.label ?? "—"}
+          sub={stdSub(data.mrConsistency?.std)}
+          hint="User with the lowest variability in given ratings among eligible users."
+          leftSlot={data.mrConsistency?.label ? <Avatar name={data.mrConsistency.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ArrowTrendingDownIcon}
+          color="rose"
+          label="Mr. Critic"
+          value={data.mrCritic?.label ?? "—"}
+          sub={scoreSub(data.mrCritic?.value, "average given")}
+          hint="Eligible user with the lowest average rating given."
+          leftSlot={data.mrCritic?.label ? <Avatar name={data.mrCritic.label} size={36} /> : undefined}
+        />
+        <Badge
+          icon={ArrowTrendingUpIcon}
+          color="emerald"
+          label="Mr. Generous"
+          value={data.mrGenerous?.label ?? "—"}
+          sub={scoreSub(data.mrGenerous?.value, "average given")}
+          hint="Eligible user with the highest average rating given."
+          leftSlot={data.mrGenerous?.label ? <Avatar name={data.mrGenerous.label} size={36} /> : undefined}
+        />
       </Section>
 
-      {/* Meta (IMDB) */}
-      <Section title="🧪 Meta (se disponibili)">
-        <Badge icon={ArrowTrendingUpIcon} color="green" label="Underdog" value={data.underdog?.label ?? "—"} sub={data.underdog ? `IMDb ${formatMaybe(data.underdog.imdb)} → ${formatScore(data.underdog.avg)}` : undefined} hint="Differenza più positiva: media interna molto più alta del voto IMDb." />
-        <Badge icon={ArrowTrendingDownIcon} color="red" label="Overrated" value={data.overrated?.label ?? "—"} sub={data.overrated ? `IMDb ${formatMaybe(data.overrated.imdb)} → ${formatScore(data.overrated.avg)}` : undefined} hint="Differenza più negativa: IMDb alto ma media interna più bassa." />
+      {/* Meta */}
+      <Section title="🧪 Meta">
+        <Badge
+          icon={ArrowTrendingUpIcon}
+          color="green"
+          label="Underdog"
+          value={data.underdog?.label ?? "—"}
+          sub={data.underdog ? `IMDb ${formatMaybe(data.underdog.imdb)} → ${formatScore(data.underdog.avg)}` : undefined}
+          hint="Largest positive gap between internal average and IMDb."
+          leftSlot={<PosterThumb src={data.underdog?.img} alt={data.underdog?.label} />}
+        />
+        <Badge
+          icon={ArrowTrendingDownIcon}
+          color="red"
+          label="Overrated"
+          value={data.overrated?.label ?? "—"}
+          sub={data.overrated ? `IMDb ${formatMaybe(data.overrated.imdb)} → ${formatScore(data.overrated.avg)}` : undefined}
+          hint="Largest negative gap between internal average and IMDb."
+          leftSlot={<PosterThumb src={data.overrated?.img} alt={data.overrated?.label} />}
+        />
       </Section>
 
-      {/* Annuali */}
+      {/* Yearly */}
       {data.currentYear && data.yearly && (
-        <Section title={`📅 ${data.currentYear}: Speciali dell'anno`}>
-          <Badge icon={TrophyIcon} color="amber" label="Miglior film dell'anno" value={data.yearly.bestFilm?.label ?? "—"} sub={scoreSub(data.yearly.bestFilm?.value)} hint="Il film con la media più alta tra quelli visti nell'anno corrente." />
-          <Badge icon={ArrowTrendingUpIcon} color="green" label="MVP dell'anno (media ricevuta)" value={data.yearly.mvpPicker?.label ?? "—"} sub={scoreSub(data.yearly.mvpPicker?.value)} hint="Il proponente con la media più alta sui film scelti durante l'anno." />
-          <Badge icon={UsersIcon} color="sky" label="Più presenze nell'anno" value={data.yearly.mostPresence?.label ?? "—"} sub={countSub(data.yearly.mostPresence?.count, "presenze")} hint="Chi ha partecipato più volte nell'anno corrente." />
+        <Section title={`📅 ${data.currentYear} — Year highlights`}>
+          <Badge
+            icon={TrophyIcon}
+            color="amber"
+            label="Best movie of the year"
+            value={data.yearly.bestFilm?.label ?? "—"}
+            sub={scoreSub(data.yearly.bestFilm?.value)}
+            hint="The movie with the highest average among those watched this year."
+            leftSlot={<PosterThumb src={(data.yearly as any)?.bestFilm?.img} alt={data.yearly.bestFilm?.label} />}
+          />
+          <Badge
+            icon={ArrowTrendingUpIcon}
+            color="green"
+            label="MVP of the year"
+            value={data.yearly.mvpPicker?.label ?? "—"}
+            sub={scoreSub(data.yearly.mvpPicker?.value)}
+            hint="Picker with the highest average across chosen movies during the year. Only eligible pickers are considered."
+            leftSlot={data.yearly.mvpPicker?.label ? <Avatar name={data.yearly.mvpPicker.label} size={36} /> : undefined}
+          />
+          <Badge
+            icon={UsersIcon}
+            color="sky"
+            label="Most attendance this year"
+            value={data.yearly.mostPresence?.label ?? "—"}
+            sub={countSub(data.yearly.mostPresence?.count, "attendances")}
+            hint="Who attended the most during the current year among eligible users."
+            leftSlot={data.yearly.mostPresence?.label ? <Avatar name={data.yearly.mostPresence.label} size={36} /> : undefined}
+          />
         </Section>
       )}
+
+      <RulesBlock minRatingsForUserStats={minRatingsForUserStats} minPicksForPickerStats={minPicksForPickerStats} />
     </Card>
   );
 }
@@ -457,6 +867,27 @@ function Section({
   );
 }
 
+/* Poster thumbnail */
+function PosterThumb({ src, alt = "" }: { src?: string | null; alt?: string }) {
+  if (!src) {
+    return (
+      <div className="h-12 w-8 rounded-md ring-1 ring-white/10 bg-zinc-800/60 grid place-items-center text-[10px] text-zinc-400">
+        N/A
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className="h-12 w-8 rounded-md ring-1 ring-white/10 object-cover"
+      loading="lazy"
+      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+    />
+  );
+}
+
+/* Badge con slot sinistro */
 function Badge({
   icon: Icon,
   color,
@@ -464,6 +895,7 @@ function Badge({
   value,
   sub,
   hint,
+  leftSlot,
 }: {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   color:
@@ -472,24 +904,34 @@ function Badge({
   label: string;
   value: string;
   sub?: string;
-  /** Testo mostrato nel tooltip. */
   hint?: string;
+  leftSlot?: React.ReactNode;
 }) {
   const cls = colorToCls(color);
   const titleText = hint ? (sub ? `${hint} • ${sub}` : hint) : sub ?? "";
+
   return (
     <div
       className={`relative flex items-center gap-3 rounded-2xl border px-3 py-2 ${cls.border} ${cls.bg}`}
       title={titleText}
     >
-      <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${cls.chipBg} ${cls.text}`}>
-        <Icon className="h-5 w-5" />
-      </div>
+      {leftSlot ? (
+        <div className="shrink-0">{leftSlot}</div>
+      ) : (
+        <div
+          className={`flex h-9 w-9 items-center justify-center rounded-xl ${cls.chipBg} ${cls.text}`}
+        >
+          <Icon className="h-5 w-5" />
+        </div>
+      )}
+
       <div className="min-w-0">
-        <div className="truncate text-sm font-medium">{label}</div>
-        <div className="truncate text-xs text-zinc-300">
-          <span className="font-semibold">{value}</span>
-          {sub ? <span className="text-zinc-400"> — {sub}</span> : null}
+        <div className="truncate text-sm font-medium text-zinc-200">{label}</div>
+        <div className="truncate text-sm">
+          <span className="font-bold text-white text-base">{value}</span>
+          {sub ? (
+            <span className="ml-1 text-zinc-400 font-medium">— {sub}</span>
+          ) : null}
         </div>
       </div>
 
@@ -520,14 +962,14 @@ function colorToCls(color: Parameters<typeof Badge>[0]["color"]) {
   return map[color];
 }
 
-function scoreSub(v?: number, label = "media") {
+function scoreSub(v?: number, label = "average") {
   return v == null ? undefined : `${label}: ${formatScore(v)}`;
 }
-function countSub(n?: number, label = "volte") {
+function countSub(n?: number, label = "times") {
   return n == null ? undefined : `${n} ${label}`;
 }
 function stdSub(std?: number) {
-  return std == null ? undefined : `deviazione: ${formatMaybe(std, 2)}`;
+  return std == null ? undefined : `deviation: ${formatMaybe(std, 2)}`;
 }
 function formatMaybe(v?: number, digits = 1) {
   return v == null || Number.isNaN(v) ? "—" : v.toFixed(digits);
@@ -536,39 +978,192 @@ function formatMaybe(v?: number, digits = 1) {
 /* =========================================
    Podio
 ========================================= */
+
+/* ==== Mini components ==================================================== */
+const Medal: React.FC<{ rank: number }> = ({ rank }) => {
+  const idx = Number.isFinite(rank) ? Math.min(Math.max(Math.floor(rank) - 1, 0), 2) : 0;
+  const cfg = [
+    { bg: "bg-yellow-400/20", text: "text-yellow-300" }, // 1
+    { bg: "bg-zinc-400/20",  text: "text-zinc-200"  },   // 2
+    { bg: "bg-amber-600/20", text: "text-amber-300" },   // 3
+  ][idx];
+  return (
+    <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-sm font-bold ${cfg.bg} ${cfg.text}`}>
+      {idx + 1}
+    </span>
+  );
+};
+
+const ScorePill: React.FC<{
+  children: React.ReactNode;
+  accent?: "amber" | "emerald" | "sky" | "fuchsia";
+  size?: "sm" | "lg";
+}> = ({ children, accent = "amber", size = "sm" }) => {
+  const map = {
+    amber: "from-amber-500/20 to-amber-500/10 text-amber-300 ring-amber-400/30",
+    emerald: "from-emerald-500/20 to-emerald-500/10 text-emerald-300 ring-emerald-400/30",
+    sky: "from-sky-500/20 to-sky-500/10 text-sky-300 ring-sky-400/30",
+    fuchsia: "from-fuchsia-500/20 to-fuchsia-500/10 text-fuchsia-300 ring-fuchsia-400/30",
+  }[accent];
+  const sizing = size === "lg" ? "px-3 py-1 text-sm" : "px-2 py-0.5 text-sm";
+  return (
+    <span className={`inline-flex items-center rounded-full ring-1 bg-gradient-to-b ${map} ${sizing} backdrop-blur-sm`}>
+      {children}
+    </span>
+  );
+};
+
+const PodiumThumb: React.FC<{ img?: string | null; name?: string; big?: boolean }> = ({ img, name, big }) => {
+  const posterClass = big ? "h-12 w-9" : "h-10 w-7";
+  if (img) {
+    return (
+      <div className="relative shrink-0">
+        <img
+          src={img}
+          alt={name ?? ""}
+          className={`${posterClass} rounded-md object-cover ring-1 ring-white/10`}
+          loading="lazy"
+          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+        />
+        {/* aura glow */}
+        <div className="pointer-events-none absolute -inset-1 rounded-lg bg-amber-500/0 blur-md group-hover:bg-amber-400/10 transition-colors" />
+      </div>
+    );
+  }
+  // fallback bubble
+  return (
+    <div className={`${big ? "h-12 w-12" : "h-10 w-10"} rounded-full bg-zinc-800/70 grid place-items-center text-xs text-zinc-300 ring-1 ring-white/10`}>
+      {(name ?? "•").slice(0,1)}
+    </div>
+  );
+};
+/* ==== PODIUM PRO ======================================================== */
 function Podium({
   title,
-  items,
   hint,
+  items,
+  accent = "amber",
 }: {
   title: string;
-  items: { label: string; sub?: string }[];
-  /** Tooltip della “i” in alto a destra */
   hint?: string;
+  accent?: "amber" | "emerald" | "sky" | "fuchsia";
+  items: Array<{
+    label: string;
+    subLeft?: string;         // "7 votes" / "8 movies"
+    right?: string;           // "avg 9.14"
+    img?: string | null;      // poster (film)
+    avatarName?: string;      // fallback bubble name
+    thumb?: React.ReactNode;  // override esplicito (es. <Avatar .../>)
+  }>;
 }) {
-  const top = (items ?? []).slice(0, 3);
+  const titleColor = {
+    amber: "text-amber-300",
+    emerald: "text-emerald-300",
+    sky: "text-sky-300",
+    fuchsia: "text-fuchsia-300",
+  }[accent];
+
+  const borderColor = {
+    amber: "border-amber-500/30",
+    emerald: "border-emerald-500/30",
+    sky: "border-sky-500/30",
+    fuchsia: "border-fuchsia-500/30",
+  }[accent];
+
+  const headerBg = {
+    amber: "bg-amber-500/5",
+    emerald: "bg-emerald-500/5",
+    sky: "bg-sky-500/5",
+    fuchsia: "bg-fuchsia-500/5",
+  }[accent];
+
+  const first = items[0];
+  const rest = items.slice(1);
+
   return (
-    <div className="relative rounded-2xl border border-amber-500/30 bg-amber-500/5 p-3" title={hint}>
-      <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-300">
+    <div className={`relative rounded-2xl border ${borderColor} ${headerBg} p-3`}>
+      {/* header */}
+      <div className={`mb-2 flex items-center gap-2 text-sm font-semibold ${titleColor}`}>
         <TrophyIcon className="h-4 w-4" />
         {title}
       </div>
-      <ol className="space-y-1">
-        {top.map((it, i) => (
-          <li key={i} className="flex items-center gap-3">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-500/10 text-sm font-bold text-amber-300">
-              {i + 1}
-            </span>
+
+      {/* FEATURED #1 */}
+      {first ? (
+        <div className="group relative mb-2 rounded-xl border border-white/10 bg-white/5 px-2 py-1.5 ring-1 ring-black/0 hover:ring-white/10 transition">
+          {/* crown */}
+          <div className="absolute -top-2 left-10 text-yellow-300/90 drop-shadow">
+            <svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M5 18h14l-1-9-4 3-3-6-3 6-4-3z"/></svg>
+          </div>
+          {/* shine */}
+          <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
+            <div className="absolute -left-1 top-0 h-full w-12 -skew-x-12 bg-white/8 blur-[2px] opacity-0 group-hover:opacity-100 animate-podium-shine" />
+          </div>
+          <div className="grid grid-cols-[auto,auto,1fr,auto] items-center gap-3">
+            <Medal rank={1} />
+            {first.thumb
+              ? <div className="shrink-0">{first.thumb}</div>
+              : <PodiumThumb img={first.img ?? null} name={first.avatarName ?? first.label} big />}
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold">{first.label}</div>
+              {first.subLeft && <div className="truncate text-xs text-zinc-400">{first.subLeft}</div>}
+            </div>
+            {first.right ? <ScorePill size="lg">{first.right}</ScorePill> : <div />}
+          </div>
+        </div>
+      ) : null}
+
+      {/* #2 & #3 */}
+      <ol className="space-y-1.5">
+        {rest.map((it, i) => (
+          <li
+            key={i}
+            className="group relative grid grid-cols-[auto,auto,1fr,auto] items-center gap-3 rounded-xl px-2 py-1 hover:bg-white/5 transition"
+          >
+            <Medal rank={i + 2} />
+            {it.thumb ? <div className="shrink-0">{it.thumb}</div> : <PodiumThumb img={it.img ?? null} name={it.avatarName ?? it.label} />}
             <div className="min-w-0">
               <div className="truncate text-sm font-medium">{it.label}</div>
-              {it.sub && <div className="truncate text-xs text-zinc-400">{it.sub}</div>}
+              {it.subLeft && <div className="truncate text-xs text-zinc-400">{it.subLeft}</div>}
             </div>
+            {it.right ? <ScorePill>{it.right}</ScorePill> : <div />}
           </li>
         ))}
-        {!top.length && <div className="text-xs text-zinc-500">—</div>}
+        {!first && items.length === 0 && <div className="text-xs text-zinc-500">—</div>}
       </ol>
 
       {hint && <InfoBadge text={hint} />}
+      {/* keyframes locali */}
+      <style>{`
+        @keyframes podium-shine {
+          0%   { transform: translateX(-20%) }
+          100% { transform: translateX(120%) }
+        }
+        .animate-podium-shine { animation: podium-shine 1.2s ease-in-out 1; }
+      `}</style>
+    </div>
+  );
+}
+/* =========================================
+   Rules block
+========================================= */
+function RulesBlock({
+  minRatingsForUserStats,
+  minPicksForPickerStats,
+}: {
+  minRatingsForUserStats: number;
+  minPicksForPickerStats: number;
+}) {
+  return (
+    <div className="mt-4 rounded-2xl border border-zinc-700/60 bg-zinc-900/40 p-3">
+      <div className="mb-1 text-sm font-semibold text-zinc-300">Rules</div>
+      <ul className="list-disc pl-5 text-xs text-zinc-400 space-y-1">
+        <li>Users are eligible after at least {minRatingsForUserStats} ratings given.</li>
+        <li>Pickers are eligible after at least {minPicksForPickerStats} movies proposed.</li>
+        <li>Most divisive is based on the highest standard deviation of ratings.</li>
+        <li>Ties are broken by the higher number of votes where applicable.</li>
+        <li>Year highlights use the same eligibility rules within the current year.</li>
+      </ul>
     </div>
   );
 }
@@ -576,7 +1171,12 @@ function Podium({
 /* =========================================
    Core: computeHallOfFame
 ========================================= */
-function computeHallOfFame(history: any[], minVotesForUserStats: number, userAliases: string[]) {
+function computeHallOfFame(
+  history: any[],
+  minRatingsForUserStats: number,
+  minPicksForPickerStats: number,
+  userAliases: string[]
+) {
   const items = (history || []).map(normalizeViewing).filter(Boolean) as NormViewing[];
 
   // Film-level
@@ -584,6 +1184,17 @@ function computeHallOfFame(history: any[], minVotesForUserStats: number, userAli
   const filmByMinAvg = minBy(items.filter(hasVotes), (v) => v.avg);
   const filmByVotes = maxBy(items, (v) => v.numVotes);
   const filmByStd = maxBy(items.filter((v) => v.std != null), (v) => v.std ?? -Infinity);
+
+  const NOW = new Date().getFullYear();
+  const yearItems = items.filter(
+    (v) => typeof v.year === "number" && Number.isFinite(v.year) && v.year >= 1888 && v.year <= NOW + 1
+  );
+  const filmByYearMin = minBy(yearItems, (v) => v.year as number);
+  const filmByYearMax = maxBy(yearItems, (v) => v.year as number);
+
+  const withRuntime = items.filter((v) => Number.isFinite(v.runtime as number));
+  const filmByRuntimeMax = maxBy(withRuntime, (v) => (v.runtime as number));
+  const filmByRuntimeMin = minBy(withRuntime, (v) => (v.runtime as number));
 
   // Tuo film preferito
   const yourBest = bestForCurrentUser(items, userAliases);
@@ -594,6 +1205,8 @@ function computeHallOfFame(history: any[], minVotesForUserStats: number, userAli
   const pickerAvgReceived: Record<string, number[]> = {};
   const pickerTens: Record<string, number> = {};
   const pickerOnes: Record<string, number> = {};
+  const pickerRuntime: Record<string, number[]> = {};
+  const pickerSelfGaps: Record<string, number[]> = {};
   const picksCount: Record<string, number> = {};
 
   for (const v of items) {
@@ -605,35 +1218,80 @@ function computeHallOfFame(history: any[], minVotesForUserStats: number, userAli
     if (v.picker) {
       picksCount[v.picker] = (picksCount[v.picker] ?? 0) + 1;
       if (hasVotes(v)) (pickerAvgReceived[v.picker] ??= []).push(v.avg);
+
       const tens = Object.values(v.ratings).filter((s) => s === 10).length;
-      const ones = Object.values(v.ratings).filter((s) => s === 1).length;
+      const ones = Object.values(v.ratings).filter((s) => s < 4).length;
       pickerTens[v.picker] = (pickerTens[v.picker] ?? 0) + tens;
       pickerOnes[v.picker] = (pickerOnes[v.picker] ?? 0) + ones;
+
+      const rt = v.runtime;
+      if (Number.isFinite(rt as number)) (pickerRuntime[v.picker] ??= []).push(rt as number);
+
+      if (hasVotes(v)) {
+        const selfVote = v.ratings[v.picker];
+        if (Number.isFinite(selfVote)) {
+          const gap = (selfVote as number) - v.avg;
+          (pickerSelfGaps[v.picker] ??= []).push(gap);
+        }
+      }
     }
   }
 
-  const mostPresence = topLabelCount(presenceCount);
-  const topVoter = mostPresence ? { label: mostPresence.label, count: (userGiven[mostPresence.label] ?? []).length } : null;
-  const mostPicks = topLabelCount(picksCount);
-  const highestAvgReceived = topLabelAvg(pickerAvgReceived, "max");
-  const lowestAvgReceived = topLabelAvg(pickerAvgReceived, "min");
-  const mostTensReceived = topLabelCount(pickerTens);
-  const mostOnesReceived = topLabelCount(pickerOnes);
+  const eligibleUsers = new Set(
+    Object.keys(userGiven).filter((u) => (userGiven[u]?.length ?? 0) >= minRatingsForUserStats)
+  );
+  const eligiblePickers = new Set(
+    Object.keys(picksCount).filter((p) => (picksCount[p] ?? 0) >= minPicksForPickerStats)
+  );
+
+  const mostPresence = topLabelCount(presenceCount, eligibleUsers);
+  const topVoter = mostPresence
+    ? { label: mostPresence.label, count: (userGiven[mostPresence.label] ?? []).length }
+    : null;
+  const mostPicks = topLabelCount(picksCount, eligiblePickers);
+  const highestAvgReceived = topLabelAvg(pickerAvgReceived, "max", eligiblePickers);
+  const lowestAvgReceived = topLabelAvg(pickerAvgReceived, "min", eligiblePickers);
+  const mostTensReceived = topLabelCount(pickerTens, eligiblePickers);
+  const mostOnesReceived = topLabelCount(pickerOnes, eligiblePickers);
+
+  const selfAvgGaps = Object.entries(pickerSelfGaps)
+    .filter(([p, arr]) => arr.length > 0 && eligiblePickers.has(p))
+    .map(([p, arr]) => [p, avg(arr)] as const);
+
+  const mostGenerousSelf = selfAvgGaps.length
+    ? selfAvgGaps.reduce((a, b) => (b[1] > a[1] ? b : a))
+    : null;
+  const mostCriticalSelf = selfAvgGaps.length
+    ? selfAvgGaps.reduce((a, b) => (b[1] < a[1] ? b : a))
+    : null;
+
+  const longestPickerAvg = topLabelAvg(pickerRuntime, "max", eligiblePickers);
+  const shortestPickerAvg = topLabelAvg(pickerRuntime, "min", eligiblePickers);
 
   // Nights
-  const nightMostParticipants = maxBy(items, (v) => v.numVotes);
+  const nightsWithVotes = items.filter((v) => v.numVotes > 0);
+
+  const nightMostParticipants = maxBy(nightsWithVotes, (v) => v.numVotes);
+  const nightLeastParticipants = minBy(nightsWithVotes, (v) => v.numVotes);
+
   const nightHighestAvg = maxBy(items.filter(hasVotes), (v) => v.avg);
   const nightLowestAvg = minBy(items.filter(hasVotes), (v) => v.avg);
   const recordNight = nightHighestAvg;
-  const firstNight = minBy(items.filter((v) => v.date), (v) => (v.date ? new Date(v.date).getTime() : Infinity));
+  const firstNight = minBy(
+    items.filter((v) => v.date),
+    (v) => (v.date ? new Date(v.date).getTime() : Infinity)
+  );
 
-  // Profili
+
+  // Profili con soglia
   const userAvgs = mapValues(userGiven, avg);
-  const eligibleAvgs = Object.entries(userAvgs).filter(([u]) => (userGiven[u] ?? []).length >= minVotesForUserStats);
+  const eligibleAvgs = Object.entries(userAvgs).filter(
+    ([u]) => (userGiven[u] ?? []).length >= minRatingsForUserStats
+  );
   const mrGenerous = eligibleAvgs.length ? eligibleAvgs.reduce((a, b) => (b[1] > a[1] ? b : a)) : null;
   const mrCritic = eligibleAvgs.length ? eligibleAvgs.reduce((a, b) => (b[1] < a[1] ? b : a)) : null;
 
-  const userVars = mapValues(userGiven, (arr) => (arr.length >= minVotesForUserStats ? variance(arr) : Infinity));
+  const userVars = mapValues(userGiven, (arr) => (arr.length >= minRatingsForUserStats ? variance(arr) : Infinity));
   const eligibleVars = Object.entries(userVars).filter(([, v]) => Number.isFinite(v));
   const mrConsistency = eligibleVars.length
     ? eligibleVars.reduce((a, b) => ((b[1] as number) < (a[1] as number) ? b : a))
@@ -645,15 +1303,21 @@ function computeHallOfFame(history: any[], minVotesForUserStats: number, userAli
   const overrated = maxBy(withImdb, (v) => (v.imdb as number) - v.avg);
 
   // Podii
-  const top3Films = [...items]
-    .filter((x) => hasVotes(x))
-    .sort((a, b) => b.avg - a.avg || b.numVotes - a.numVotes)
-    .slice(0, 3)
-    .map((x) => ({ title: x.title, avg: x.avg, numVotes: x.numVotes }));
+const top3Films = [...items]
+  .filter(hasVotes)
+  .sort((a, b) => b.avg - a.avg || b.numVotes - a.numVotes)
+  .slice(0, 3)
+  .map((x) => ({ title: x.title, avg: x.avg, numVotes: x.numVotes, img: x.poster ?? null }));
+
 
   const pickerAvgArr = Object.entries(pickerAvgReceived)
-    .map(([picker, arr]) => ({ picker, avg: arr.length ? avg(arr) : NaN, count: arr.length }))
-    .filter((x) => Number.isFinite(x.avg) && x.count > 0)
+    .map(([picker, arr]) => ({
+      picker,
+      avg: arr.length ? avg(arr) : NaN,
+      count: arr.length,
+      totalPicked: picksCount[picker] ?? arr.length,
+    }))
+    .filter((x) => Number.isFinite(x.avg) && x.count > 0 && (x.totalPicked >= minPicksForPickerStats))
     .sort((a, b) => b.avg - a.avg || b.count - a.count)
     .slice(0, 3);
 
@@ -667,14 +1331,25 @@ function computeHallOfFame(history: any[], minVotesForUserStats: number, userAli
   ).sort((a, b) => b - a);
   const currentYear = years[0];
   const yearly = currentYear
-    ? computeYearly(items.filter((it) => it.date && new Date(it.date!).getFullYear() === currentYear), minVotesForUserStats)
+    ? computeYearly(
+      items.filter((it) => it.date && new Date(it.date!).getFullYear() === currentYear),
+      minRatingsForUserStats,
+      minPicksForPickerStats,
+    )
     : null;
 
   return {
-    bestFilm: filmByAvg && { label: filmByAvg.title, value: filmByAvg.avg },
-    worstFilm: filmByMinAvg && { label: filmByMinAvg.title, value: filmByMinAvg.avg },
-    mostVotedFilm: filmByVotes && { label: filmByVotes.title, count: filmByVotes.numVotes },
-    mostDivisiveFilm: filmByStd && { label: filmByStd.title, std: filmByStd.std ?? undefined },
+    bestFilm: filmByAvg && { label: filmByAvg.title, value: filmByAvg.avg, img: filmByAvg.poster ?? null },
+    worstFilm: filmByMinAvg && { label: filmByMinAvg.title, value: filmByMinAvg.avg, img: filmByMinAvg.poster ?? null },
+    mostVotedFilm: filmByVotes && { label: filmByVotes.title, count: filmByVotes.numVotes, img: filmByVotes.poster ?? null },
+    mostDivisiveFilm: filmByStd && { label: filmByStd.title, std: filmByStd.std ?? undefined, img: filmByStd.poster ?? null },
+
+    oldestFilm: filmByYearMin && { label: filmByYearMin.title, year: filmByYearMin.year, img: filmByYearMin.poster ?? null },
+    newestFilm: filmByYearMax && { label: filmByYearMax.title, year: filmByYearMax.year, img: filmByYearMax.poster ?? null },
+
+    longestFilm: filmByRuntimeMax && { label: filmByRuntimeMax.title, minutes: filmByRuntimeMax.runtime as number, img: filmByRuntimeMax.poster ?? null },
+    shortestFilm: filmByRuntimeMin && { label: filmByRuntimeMin.title, minutes: filmByRuntimeMin.runtime as number, img: filmByRuntimeMin.poster ?? null },
+
     yourFavFilm: yourBest && { label: yourBest.title, value: yourBest.score },
 
     mostPresence,
@@ -683,20 +1358,33 @@ function computeHallOfFame(history: any[], minVotesForUserStats: number, userAli
     lowestAvgReceived,
     mostTensReceived,
     mostOnesReceived,
+
+    mostGenerousSelf: mostGenerousSelf && { label: mostGenerousSelf[0], gap: mostGenerousSelf[1] },
+    mostCriticalSelf: mostCriticalSelf && { label: mostCriticalSelf[0], gap: mostCriticalSelf[1] },
+
+    longestPicker: longestPickerAvg && { label: longestPickerAvg.label, minutes: longestPickerAvg.value },
+    shortestPicker: shortestPickerAvg && { label: shortestPickerAvg.label, minutes: shortestPickerAvg.value },
+
     topVoter,
 
-    nightMostParticipants: nightMostParticipants && { label: nightMostParticipants.title, count: nightMostParticipants.numVotes },
-    nightHighestAvg: nightHighestAvg && { label: nightHighestAvg.title, value: nightHighestAvg.avg },
-    nightLowestAvg: nightLowestAvg && { label: nightLowestAvg.title, value: nightLowestAvg.avg },
-    recordNight: recordNight && { label: recordNight.title, value: recordNight.avg },
-    firstNight: firstNight && { label: firstNight.title, date: firstNight.date ? toShortDate(firstNight.date) : undefined },
+    nightMostParticipants: nightMostParticipants && { label: nightMostParticipants.title, count: nightMostParticipants.numVotes, img: nightMostParticipants.poster ?? null },
+    nightLeastParticipants:
+      nightLeastParticipants && {
+        label: nightLeastParticipants.title,
+        count: nightLeastParticipants.numVotes,
+        img: nightLeastParticipants.poster ?? null,
+      },
+    nightHighestAvg: nightHighestAvg && { label: nightHighestAvg.title, value: nightHighestAvg.avg, img: nightHighestAvg.poster ?? null },
+    nightLowestAvg: nightLowestAvg && { label: nightLowestAvg.title, value: nightLowestAvg.avg, img: nightLowestAvg.poster ?? null },
+    recordNight: recordNight && { label: recordNight.title, value: recordNight.avg, img: recordNight.poster ?? null },
+    firstNight: firstNight && { label: firstNight.title, date: firstNight.date ? toShortDate(firstNight.date) : undefined, img: firstNight.poster ?? null },
 
     mrConsistency: mrConsistency && { label: mrConsistency[0], std: Math.sqrt(mrConsistency[1] as number) },
     mrGenerous: mrGenerous && { label: mrGenerous[0], value: mrGenerous[1] },
     mrCritic: mrCritic && { label: mrCritic[0], value: mrCritic[1] },
 
-    underdog: underdog && { label: underdog.title, imdb: underdog.imdb!, avg: underdog.avg },
-    overrated: overrated && { label: overrated.title, imdb: overrated.imdb!, avg: overrated.avg },
+    underdog: underdog && { label: underdog.title, imdb: underdog.imdb!, avg: underdog.avg, img: underdog.poster ?? null },
+    overrated: overrated && { label: overrated.title, imdb: overrated.imdb!, avg: overrated.avg, img: overrated.poster ?? null },
 
     top3Films,
     top3Pickers: pickerAvgArr,
