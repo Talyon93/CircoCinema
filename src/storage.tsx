@@ -1,5 +1,5 @@
 import { saveSharedState, loadSharedState } from "./state";
-import { sha256 } from "./Utils/hash"; // vedi helper sotto
+import { sha256 } from "./Utils/Hash"; // vedi helper sotto
 import { sb, STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY } from "./supabaseClient";
 
 
