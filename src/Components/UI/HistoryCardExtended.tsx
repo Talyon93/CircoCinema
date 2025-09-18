@@ -18,6 +18,7 @@ import { formatScore } from "../../Utils/Utils";
 import { SiImdb } from "react-icons/si";
 import ScoreSlider from "./ScoreSlider";
 import { Sparkles, Check, X } from "lucide-react";
+import { PickerBadgePro } from "./PickerPro";
 
 // ==== Country helpers (estrazione + fallback + normalizzazione bandiere) ====
 // Ritorna un ISO2 (es. "US") usando priorità: TMDB -> OMDb -> companies -> lingua
@@ -397,7 +398,7 @@ return (
     <div className="mb-3 flex items-center gap-3">
       {v.picked_by && (
         <>
-          <PickedByBadge name={v.picked_by} />
+          <PickerBadgePro name={v.picked_by} />
           <div className="mx-1 text-gray-300">•</div>
         </>
       )}

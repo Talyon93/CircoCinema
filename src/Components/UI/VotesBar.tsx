@@ -1,6 +1,10 @@
+// Components/UI/VotesBar.tsx
 import React from "react";
 import { formatScore } from "../../Utils/Utils";
 import { AvatarInline } from "./Avatar";
+import { useRoomRealtime } from "../../hooks/useRoomRealtime";
+import type { VoteEventPayload } from "../../realtimeTypes";
+import { sb } from "../../supabaseClient";
 
 function avgColor(score: number) {
   const s = Math.max(1, Math.min(10, score));
@@ -9,20 +13,49 @@ function avgColor(score: number) {
   return `hsl(${hue} 85% 50%)`;
 }
 
+function debounce<T extends (...args: any[]) => void>(fn: T, wait = 600) {
+  let t: any;
+  return (...args: Parameters<T>) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), wait);
+  };
+}
+
+type Entry = [string, number];
+
 export function VotesBar({
+  /** Rendering data (fallback iniziale / SSR): [username, voto] */
   entries,
+  /** Media (se disponibile) */
   avg,
+  /** Utente corrente per ring evidenziato */
   currentUser,
+  /** Realtime opzionale: se presenti, abilita voto istantaneo */
+  roomId,
+  targetId,
+  /** Comportamento/UX */
   size = "md",
   showScale = true,
   showHeader = true,
+  interactive = true,    // permette click sulla barra per votare
+  showButtons = false,   // mostra bottoni 1–10; default off per rimanere “pulito”
+  scale = [1,2,3,4,5,6,7,8,9,10],
+  onLocalChange,
 }: {
-  entries: [string, number][];
+  entries: Entry[];
   avg: number | null;
   currentUser?: string;
+  /** se definiti -> realtime + persistenza */
+  roomId?: string;
+  targetId?: string;
+  /** UI */
   size?: "sm" | "md";
   showScale?: boolean;
   showHeader?: boolean;
+  interactive?: boolean;
+  showButtons?: boolean;
+  scale?: number[];
+  onLocalChange?: (value: number) => void;
 }) {
   const toPct = (n: number) => ((Number(n) - 1) / 9) * 100;
   const BADGE_SHIFT = 0.5;
@@ -47,16 +80,80 @@ export function VotesBar({
     return () => ro.disconnect();
   }, []);
 
-  const points = React.useMemo(
+  /** ---- Stato locale dei voti (nome -> valore) ------------------ */
+  const [votes, setVotes] = React.useState<Record<string, number>>(() => {
+    const base: Record<string, number> = {};
+    for (const [name, score] of entries) base[name] = Number(score);
+    return base;
+  });
+
+  // Se cambia "entries" dall’alto, riallineo lo stato (senza perdere voti arrivati via realtime con stessi nomi)
+  React.useEffect(() => {
+    setVotes(prev => {
+      const next = { ...prev };
+      for (const [name, score] of entries) next[name] = Number(score);
+      return next;
+    });
+  }, [JSON.stringify(entries)]); // dipendenza “stabile” rispetto al contenuto
+
+  /** ---- Realtime (opzionale) ----------------------------------- */
+  const pendingBatch = React.useRef<{ voter: string; value: number; targetId: string; ts: number }[]>([]);
+  const { send } = useRoomRealtime(roomId || "local", {
+    onVote: (p: VoteEventPayload) => {
+      if (!targetId || p.targetId !== targetId) return;
+      // aggiorno UI all’istante
+      setVotes(prev => ({ ...prev, [p.voter]: p.value }));
+    },
+  });
+
+  const flush = React.useMemo(
+    () => debounce(async () => {
+      const rows = pendingBatch.current.splice(0);
+      if (!rows.length) return;
+      if (!sb) return; // offline/dev: salta persistenza
+      await sb.from("votes").upsert(
+        rows.map(r => ({
+          target_id: r.targetId,
+          voter: r.voter,
+          value: r.value,
+          ts: new Date(r.ts).toISOString(),
+        })),
+        { onConflict: "target_id,voter" }
+      );
+    }, 700),
+    []
+  );
+
+  function cast(value: number) {
+    if (!currentUser) return;
+    // UI ottimistica
+    setVotes(prev => ({ ...prev, [currentUser]: value }));
+    onLocalChange?.(value);
+
+    // Realtime se ho i dati della stanza
+    if (roomId && targetId) {
+      const payload: VoteEventPayload = {
+        kind: "vote.cast",
+        roomId,
+        voter: currentUser,
+        value,
+        targetId,
+        ts: Date.now(),
+      };
+      send("vote", payload);
+      // Accodo per persistenza
+      pendingBatch.current.push({ voter: currentUser, value, targetId, ts: payload.ts });
+      flush();
+    }
+  }
+
+  /** ---- Derivazioni per il rendering (cluster identico al tuo) -- */
+  const list: { name: string; score: number; pct: number }[] = React.useMemo(
     () =>
-      entries
-        .map(([name, score]) => ({
-          name,
-          score: Number(score),
-          pct: toPct(Number(score)),
-        }))
+      Object.entries(votes)
+        .map(([name, score]) => ({ name, score: Number(score), pct: toPct(Number(score)) }))
         .sort((a, b) => a.pct - b.pct),
-    [entries]
+    [votes]
   );
 
   const minPct = React.useMemo(() => {
@@ -65,13 +162,13 @@ export function VotesBar({
     return (minPx / w) * 100;
   }, [w, avatarSz]);
 
-  type P = typeof points[number];
+  type P = typeof list[number];
   type Cluster = { pct: number; people: P[] };
 
   const clusters: Cluster[] = React.useMemo(() => {
     const out: Cluster[] = [];
     let cur: P[] = [];
-    for (const p of points) {
+    for (const p of list) {
       if (!cur.length || Math.abs(p.pct - cur[cur.length - 1].pct) < minPct) {
         cur.push(p);
       } else {
@@ -85,7 +182,7 @@ export function VotesBar({
       out.push({ pct, people: cur });
     }
     return out;
-  }, [points, minPct]);
+  }, [list, minPct]);
 
   function pickRep(c: Cluster) {
     const meIdx = currentUser ? c.people.findIndex((p) => p.name === currentUser) : -1;
@@ -93,20 +190,43 @@ export function VotesBar({
     return c.people.slice().sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))[0];
   }
 
+  /** ---- Click sulla barra per votare (se interactive) ----------- */
+  function onTrackClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (!interactive) return;
+    if (!currentUser) return;
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const x = e.clientX - rect.left; // 0..width
+    const pct = Math.max(0, Math.min(1, x / rect.width));
+    // pct(0) -> voto 1 | pct(1) -> voto 10
+    const value = Math.round(1 + pct * 9);
+    cast(value);
+  }
+
+  const myVote = currentUser ? votes[currentUser] ?? null : null;
+
   return (
     <div className="relative w-full">
       {showHeader && (
         <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-          <span>Avg {entries.length ? `(${entries.length} votes)` : ""}</span>
+          <span>
+            Avg {Object.keys(votes).length ? `(${Object.keys(votes).length} votes)` : ""}
+          </span>
           <span>10</span>
         </div>
       )}
 
-      {/* TRACK: barra con fill e tacche bianche */}
+      {/* TRACK: barra con fill e tacche bianche (click per votare se interactive) */}
       <div
         ref={ref}
-        className="relative w-full overflow-visible rounded-full bg-zinc-800"
+        className={
+          "relative w-full overflow-visible rounded-full bg-zinc-800 " +
+          (interactive ? "cursor-pointer" : "")
+        }
         style={{ height: trackH }}
+        onClick={onTrackClick}
+        title={interactive ? "Click per votare (1–10)" : undefined}
       >
         {avg !== null && (
           <div
@@ -130,7 +250,8 @@ export function VotesBar({
         {clusters.map((c, i) => {
           const rep = pickRep(c);
           const others = c.people.length - 1;
-          const ring = rep.name === currentUser ? "ring-white" : ringByScore(rep.score);
+          const ring =
+            currentUser && rep.name === currentUser ? "ring-white" : ringByScore(rep.score);
           const tooltip = c.people.map((p) => `${p.name} ${formatScore(p.score)}`).join(", ");
 
           return (
@@ -171,6 +292,26 @@ export function VotesBar({
           <span>1</span>
           <span>5</span>
           <span>10</span>
+        </div>
+      )}
+
+      {showButtons && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {scale.map((n) => (
+            <button
+              key={n}
+              onClick={() => cast(n)}
+              className={
+                "min-w-8 rounded-lg border px-2 py-1 text-xs " +
+                (myVote === n
+                  ? "border-emerald-500 bg-emerald-600/20 text-emerald-200"
+                  : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800")
+              }
+              title={`Vota ${n}`}
+            >
+              {n}
+            </button>
+          ))}
         </div>
       )}
     </div>

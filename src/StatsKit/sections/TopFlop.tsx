@@ -1,7 +1,7 @@
 
 // sections/TopFlop.tsx
 import React from "react";
-import { Card } from "../../Components/UI/Card";
+import { CardStats } from "../../Components/UI/CardStats";
 import { PickedByBadge } from "../../Components/UI/PickedByBadge";
 import { TrophyIcon, BoltIcon } from "@heroicons/react/24/outline";
 import { formatScore } from "../../Utils/Utils";
@@ -13,7 +13,7 @@ export function TopFlop({ bestMovies, worstMovies, isLoading }:{ bestMovies:any[
   );
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Card>
+      <CardStats>
         <h3 className="flex items-center gap-2 text-lg font-semibold">
           <TrophyIcon className="h-5 w-5" />
           Top 5 movies
@@ -38,8 +38,8 @@ export function TopFlop({ bestMovies, worstMovies, isLoading }:{ bestMovies:any[
             ))}
           </ol>
         )}
-      </Card>
-      <Card>
+      </CardStats>
+      <CardStats>
         <h3 className="flex items-center gap-2 text-lg font-semibold">
           <BoltIcon className="h-5 w-5 text-rose-500" />
           Flop 5 movies
@@ -64,7 +64,7 @@ export function TopFlop({ bestMovies, worstMovies, isLoading }:{ bestMovies:any[
             ))}
           </ol>
         )}
-      </Card>
+      </CardStats>
     </div>
   );
 }

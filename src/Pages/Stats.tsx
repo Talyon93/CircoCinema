@@ -96,7 +96,7 @@ function YearsSection({
       <div className="mb-2 flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-200">
           <CalendarRange className="h-4 w-4 opacity-70" />
-          Distribuzione per {mode === "year" ? "anno" : "decade"} di uscita
+          Distribution by {mode === "year" ? "year" : "decade"} of release
         </h3>
         <div className="flex gap-1 rounded-lg border border-zinc-700/60 p-1">
           <button
@@ -136,7 +136,7 @@ function YearsSection({
               cursor={{ fill: "rgba(255,255,255,0.05)" }}
               contentStyle={{ background: "#0a0a0a", border: "1px solid #3f3f46", borderRadius: 8 }}
               labelStyle={{ color: "#fafafa" }}
-              formatter={(v: any) => [v, "Conteggio"]}
+              formatter={(v: any) => [v, "Count"]}
             />
             <Bar dataKey="value" radius={[4, 4, 0, 0]} fill="#60a5fa" />
           </BarChart>
@@ -389,7 +389,7 @@ export function Stats({
             ].join(" ")}
           >
             <BarChart3 className="h-4 w-4 opacity-80" />
-            <span className="text-sm font-medium">Stats generali</span>
+            <span className="text-sm font-medium">General stats</span>
           </button>
           <button
             role="tab"
@@ -403,7 +403,7 @@ export function Stats({
             ].join(" ")}
           >
             <User className="h-4 w-4 opacity-80" />
-            <span className="text-sm font-medium">Stats personali</span>
+            <span className="text-sm font-medium">Personal stats</span>
           </button>
           <button
             role="tab"
@@ -429,7 +429,7 @@ export function Stats({
     <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
       <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
         <BarChart3 className="h-5 w-5 opacity-80" />
-        Indicatori principali
+        Key indicators
       </h2>
       <KpiRow
         totalMovies={history.length}
@@ -444,7 +444,7 @@ export function Stats({
     <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
       <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
         <CalendarRange className="h-5 w-5 opacity-80" />
-        Andamento nel tempo
+        Trend over time
       </h2>
       <Timeline data={timelineMain.slice().sort((a, b) => a.t - b.t)} />
       <ImdbDelta data={timelineDelta.slice().sort((a, b) => a.t - b.t)} />
@@ -454,7 +454,7 @@ export function Stats({
     <section className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 p-4 space-y-3">
       <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
         <Medal className="h-5 w-5 opacity-80" />
-        Distribuzioni e similarità
+        Distributions & similarity
       </h2>
       <ScatterRuntimeSection
         points={movieStats
@@ -507,7 +507,7 @@ export function Stats({
       )}
 
       <p className="text-xs text-zinc-500">
-        * Total minutes considerano solo i film con <code>runtime</code> noto (TMDB). IMDb delta calcolato su film con rating IMDb disponibile.
+        * Total minutes consider only films with known runtime (TMDB). IMDb delta is calculated on films with an available IMDb rating.
       </p>
     </div>
   );

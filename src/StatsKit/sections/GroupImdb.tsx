@@ -1,13 +1,13 @@
 
 // sections/GroupImdb.tsx
 import React from "react";
-import { Card } from "../../Components/UI/Card";
+import { CardStats } from "../../Components/UI/CardStats";
 import { ChartBarIcon, BoltIcon } from "@heroicons/react/24/outline";
 import { DiffPill } from "../ui/DiffPill";
 export function GroupImdb({ closest, farthest }:{ closest:any[]; farthest:any[]; }){
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Card>
+      <CardStats>
         <h3 className="flex items-center gap-2 text-lg font-semibold">
           <ChartBarIcon className="h-5 w-5" />
           Closest to IMDb
@@ -24,8 +24,8 @@ export function GroupImdb({ closest, farthest }:{ closest:any[]; farthest:any[];
             ))}
           </ol>
         )}
-      </Card>
-      <Card>
+      </CardStats>
+      <CardStats>
         <h3 className="flex items-center gap-2 text-lg font-semibold">
           <BoltIcon className="h-5 w-5" />
           Farthest from IMDb
@@ -42,7 +42,7 @@ export function GroupImdb({ closest, farthest }:{ closest:any[]; farthest:any[];
             ))}
           </ol>
         )}
-      </Card>
+      </CardStats>
     </div>
   );
 }

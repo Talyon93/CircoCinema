@@ -1,7 +1,7 @@
 
 // sections/PickerAverages.tsx
 import React from "react";
-import { Card } from "../../Components/UI/Card";
+import { CardStats } from "../../Components/UI/CardStats";
 import { FilmIcon } from "@heroicons/react/24/outline";
 import { AvatarInline } from "../../Components/UI/Avatar";
 import { formatScore } from "../../Utils/Utils";
@@ -13,7 +13,7 @@ export function PickerAverages({ items, isLoading }:{ items:Array<{user:string; 
     </div>
   );
   return (
-    <Card>
+    <CardStats>
       <h3 className="flex items-center gap-2 text-lg font-semibold">
         <FilmIcon className="h-5 w-5" />
         Avg score received by pickers
@@ -35,6 +35,6 @@ export function PickerAverages({ items, isLoading }:{ items:Array<{user:string; 
           ))}
         </ul>
       )}
-    </Card>
+    </CardStats>
   );
 }

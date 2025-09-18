@@ -3,7 +3,7 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { Calendar, Timer } from "lucide-react";
 import { formatScore } from "../../Utils/Utils";
-import { PickedByBadge } from "../../Components/UI/PickedByBadge";
+import { PickerBadgePro } from "../UI/PickerPro";
 import { ScoreDonut } from "../../Components/UI/ScoreDonut";
 import { VotesBar } from "../../Components/UI/VotesBar";
 import { VoterChip } from "../../Components/UI/VoterChip";
@@ -71,7 +71,7 @@ export function ViewingModal({
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-5xl overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900 shadow-xl">
         <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
-          {v?.picked_by && <PickedByBadge name={v.picked_by} />}
+          {v?.picked_by && <PickerBadgePro name={v.picked_by} />}
           <div className="mx-2 text-zinc-600">•</div>
           <h3 className="min-w-0 flex-1 truncate text-lg font-semibold text-zinc-100">
             {title} {year ? <span className="text-zinc-400">({year})</span> : null}
