@@ -257,7 +257,7 @@ export async function tmdbDetails(tmdbId: number) {
     `https://api.themoviedb.org/3/movie/${tmdbId}` +
     `?api_key=${TMDB_API_KEY}` +
     `&language=${encodeURIComponent(DEFAULT_LANG)}` +
-    `&append_to_response=credits,keywords,images,videos,reviews,external_ids` +
+    `&append_to_response=credits,keywords,images,videos,reviews,external_ids,similar,recommendations` +
     `&include_image_language=${encodeURIComponent(DEFAULT_LANG)},en,null` +
     `&include_video_language=${encodeURIComponent(DEFAULT_LANG)},en`;
 

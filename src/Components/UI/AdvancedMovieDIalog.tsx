@@ -124,6 +124,95 @@ function CastCard({ p }: { p: any }) {
   );
 }
 
+
+function scoreSimilarity(base: any, cand: any, baseKw: number[], baseGenres: number[]) {
+  const g  = (cand?.genre_ids || (cand?.genres||[]).map((x:any)=>x.id)).filter(Boolean);
+  const kw = (cand?.keywords?.keywords || cand?.keywords?.results || cand?.keywords || []).map((x:any)=>x.id).filter(Boolean);
+  const set = <T,>(a:T[]) => new Set(a);
+  const inter = (A:Set<any>, B:Set<any>) => [...A].filter(x=>B.has(x)).length;
+
+  const G=set(baseGenres), Kg=set(g);
+  const K=set(baseKw),     Kk=set(kw);
+
+  const genreOverlap   = G.size ? inter(G, Kg)/Math.max(1,G.size) : 0;
+  const keywordOverlap = K.size ? inter(K, Kk)/Math.max(1,K.size) : 0;
+
+  const byear = Number(String(base?.release_date||"").slice(0,4))||null;
+  const cyear = Number(String(cand?.release_date||"").slice(0,4))||null;
+  const yearScore = (byear&&cyear) ? 1 - Math.min(15, Math.abs(byear-cyear))/15 : 0;
+
+  const br = Number(base?.runtime)||null;
+  const cr = Number(cand?.runtime)||null;
+  const rtScore = (br&&cr) ? 1 - Math.min(60, Math.abs(br-cr))/60 : 0;
+
+  const qa = Number(cand?.vote_average)||0;
+  const qc = Math.max(0, Math.log((Number(cand?.vote_count)||0)+1));
+  const qualScore = (qa/10) * (1 + qc/5);
+
+  const pop = Number(cand?.popularity)||0;
+  const popScore = Math.min(1, pop/200);
+
+  return 3*genreOverlap + 2*keywordOverlap + yearScore + rtScore + 1.2*qualScore + 0.6*popScore;
+}
+
+function buildRankedSimilars(details:any) {
+  const baseKw     = (details?.keywords?.keywords || details?.keywords?.results || []).map((k:any)=>k.id).filter(Boolean);
+  const baseGenres = (details?.genres||[]).map((g:any)=>g.id).filter(Boolean);
+  const sim  = (details?.similar?.results || []) as any[];
+  const recs = (details?.recommendations?.results || []) as any[];
+
+  const uniq = new Map<number,any>();
+  [...recs, ...sim].forEach(m=>{ if(m?.id && !uniq.has(m.id)) uniq.set(m.id, m); });
+
+  return [...uniq.values()]
+    .map(m => ({ m, s: scoreSimilarity(details, m, baseKw, baseGenres) }))
+    .sort((a,b)=>b.s-a.s)
+    .map(x=>x.m);
+}
+
+function SimilarTile({ movie, href }: { movie:any; href:string }) {
+  const poster = movie?.poster_path ? getPosterUrl(movie.poster_path, "w342") : null;
+  const title  = movie?.title || movie?.name || "";
+  const year   = String(movie?.release_date || movie?.first_air_date || "").slice(0,4);
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group relative block overflow-hidden rounded-xl bg-zinc-900/40 shadow-sm shadow-black/30 transition hover:-translate-y-0.5 hover:shadow-black/50"
+      onDragStart={(e)=>e.preventDefault()}
+      title={title}
+    >
+      {poster ? (
+        <img
+          src={poster}
+          alt={title}
+          className="aspect-[2/3] w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+          loading="lazy"
+          draggable={false}
+          onDragStart={(e)=>e.preventDefault()}
+        />
+      ) : <div className="aspect-[2/3] w-full bg-zinc-800" />}
+
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 p-2">
+        <div className="rounded-lg bg-black/60 px-2 py-1 text-[11px] leading-tight text-zinc-100 backdrop-blur">
+          <div className="line-clamp-1 font-medium">{title}</div>
+          <div className="mt-0.5 flex items-center gap-1 text-[10px] text-zinc-300/90">
+            {year && <span>{year}</span>}
+            <span className="mx-1">•</span>
+            <span className="rounded-[4px] border border-yellow-600/30 bg-yellow-500/10 px-1 text-[10px] text-yellow-300">IMDb</span>
+          </div>
+        </div>
+      </div>
+      <div className="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100">
+        <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
+      </div>
+    </a>
+  );
+}
+
+
 export function AdvancedMovieDialog({
   open,
   onClose,
@@ -139,6 +228,202 @@ export function AdvancedMovieDialog({
 // NEW: quotes & trivia (EN)
 const [quotesEn, setQuotesEn] = React.useState<Array<{ text: string; by?: string }>>([]);
 const [triviaEn, setTriviaEn] = React.useState<Array<{ fact: string; source?: string }>>([]);
+
+
+// ----- Similar movies state -----
+const rankedSimilars = React.useMemo(
+  () => (details ? buildRankedSimilars(details).slice(0, 12) : []),
+  [details] // non solo [details?.id]
+);
+
+const [similarHrefMap, setSimilarHrefMap] = React.useState<Record<number,string>>({});
+React.useEffect(() => {
+  let alive = true;
+  (async () => {
+    if (!rankedSimilars.length) { if (alive) setSimilarHrefMap({}); return; }
+    const out: Record<number,string> = {};
+    await Promise.all(
+      rankedSimilars.map(async (m:any) => {
+        const det = await tmdbDetails(Number(m.id));
+        const imdb = det?.external_ids?.imdb_id || det?.imdb_id;
+        out[m.id] = imdb ? `https://www.imdb.com/title/${imdb}/` : `https://www.themoviedb.org/movie/${m.id}`;
+      })
+    );
+    if (alive) setSimilarHrefMap(out);
+  })();
+  return () => { alive = false; };
+}, [rankedSimilars]);
+
+// ----- Horizontal scroller (drag + fling + progress) -----
+const simRowRef = React.useRef<HTMLDivElement|null>(null);
+const [scrollProgress, setScrollProgress] = React.useState(0);
+const updateProgress = React.useCallback(()=>{
+  const el = simRowRef.current;
+  if (!el) return setScrollProgress(0);
+  const p = el.scrollWidth > el.clientWidth ? el.scrollLeft/(el.scrollWidth-el.clientWidth) : 0;
+  setScrollProgress(clamp(p,0,1));
+},[]);
+
+type DragState = {
+  active:boolean; moved:boolean;
+  startX:number; startLeft:number;
+  lastX:number; lastT:number; vel:number; raf:number|null; pointerId:number|null;
+};
+const drag = React.useRef<DragState>({
+  active:false, moved:false,
+  startX:0, startLeft:0,
+  lastX:0, lastT:0, vel:0, raf:null, pointerId:null
+});
+
+const dragState = React.useRef<{
+  active: boolean;
+  moved: boolean;
+  startX: number; startLeft: number;
+  lastX: number; lastT: number; vel: number;
+  raf?: number | null;
+  pid?: number | null;          // << aggiunto
+}>({
+  active: false,
+  moved: false,
+  startX: 0, startLeft: 0,
+  lastX: 0, lastT: 0, vel: 0,
+  raf: null,
+  pid: null,                    // << aggiunto
+});
+
+const stopFling = () => {
+  if (drag.current.raf) cancelAnimationFrame(drag.current.raf);
+  drag.current.raf = null;
+};
+
+const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+  const el = simRowRef.current; if (!el) return;
+  if (dragState.current.raf) { cancelAnimationFrame(dragState.current.raf as number); dragState.current.raf = null; }
+  dragState.current.pid = e.pointerId;     // << track id
+  dragState.current.active = false;
+  dragState.current.moved = false;
+  dragState.current.startX = e.clientX;
+  dragState.current.startLeft = el.scrollLeft;
+  dragState.current.lastX = e.clientX;
+  dragState.current.lastT = performance.now();
+  dragState.current.vel = 0;
+  (e.currentTarget as HTMLElement).style.cursor = "grab";
+};
+
+
+const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const el = simRowRef.current; if (!el) return;
+  if (dragState.current.pid !== e.pointerId) return; // << solo il nostro puntatore
+
+  // tasto primario giù? (mouse) / touch in pressione?
+  const primaryDown = e.buttons === 1 || e.pointerType === "touch" || e.pressure > 0;
+  if (!primaryDown) return;                           // << blocca ri-attivazioni post-up
+
+  const dx = e.clientX - dragState.current.startX;
+
+  if (!dragState.current.active && Math.abs(dx) > 5) {
+    dragState.current.active = true;
+    dragState.current.moved = true;
+    el.setPointerCapture(e.pointerId);
+    (e.currentTarget as HTMLElement).style.cursor = "grabbing";
+  }
+  if (!dragState.current.active) return;
+
+  el.scrollLeft = dragState.current.startLeft - dx;
+
+  const now = performance.now();
+  const dt = now - dragState.current.lastT || 16;
+  dragState.current.vel =
+    0.8 * dragState.current.vel + 0.2 * ((dragState.current.lastX - e.clientX) / dt);
+  dragState.current.lastX = e.clientX;
+  dragState.current.lastT = now;
+
+  updateProgress();
+};
+
+const endDrag = ()=>{
+  const el = simRowRef.current; if (!el) return;
+  // nessuna inerzia se non veramente trascinato
+  if (!drag.current.active || !drag.current.moved) { drag.current.active=false; drag.current.moved=false; drag.current.vel=0; return; }
+
+  drag.current.active=false;
+  let v = drag.current.vel*16; // px/frame
+  const MIN_V = 2;
+  const step = ()=>{
+    v *= 0.95;
+    if (Math.abs(v) < MIN_V) { stopFling(); drag.current.moved=false; drag.current.vel=0; return; }
+    el.scrollLeft += v;
+    updateProgress();
+    drag.current.raf = requestAnimationFrame(step);
+  };
+  stopFling();
+  drag.current.raf = requestAnimationFrame(step);
+};
+
+const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+  const el = simRowRef.current; if (!el) return;
+  if (dragState.current.pid !== e.pointerId) return;  // ignora up di altri puntatori
+
+  try { el.releasePointerCapture(e.pointerId); } catch {}
+  (e.currentTarget as HTMLElement).style.cursor = "grab";
+
+  const MIN_V = 2;
+  const v0 = dragState.current.vel * 16;
+
+  // reset immediato per permettere il click
+  const hadDrag = dragState.current.active;
+  dragState.current.active = false;
+  dragState.current.moved  = false;   // << importante per far passare il click
+  dragState.current.pid    = null;    // << reset id
+
+  if (!hadDrag || Math.abs(v0) < MIN_V) {
+    if (dragState.current.raf) { cancelAnimationFrame(dragState.current.raf as number); dragState.current.raf = null; }
+    dragState.current.vel = 0;
+    return;
+  }
+
+  let v = v0;
+  const step = () => {
+    v *= 0.95;
+    if (Math.abs(v) < MIN_V) {
+      dragState.current.raf = null;
+      dragState.current.vel = 0;
+      return;
+    }
+    el.scrollLeft += v;
+    updateProgress();
+    dragState.current.raf = requestAnimationFrame(step);
+  };
+  if (dragState.current.raf) cancelAnimationFrame(dragState.current.raf as number);
+  dragState.current.raf = requestAnimationFrame(step);
+};
+
+
+// sicurezza: se il mouse esce dalla finestra, ferma
+React.useEffect(()=>{
+  const stop = ()=>{ stopFling(); drag.current.active=false; drag.current.moved=false; drag.current.vel=0; };
+  window.addEventListener("mouseup", stop);
+  window.addEventListener("mouseleave", stop);
+  window.addEventListener("blur", stop);
+  return ()=>{ window.removeEventListener("mouseup", stop); window.removeEventListener("mouseleave", stop); window.removeEventListener("blur", stop); };
+},[]);
+
+// sync progress on scroll/resize
+React.useEffect(()=>{
+  const el = simRowRef.current; if (!el) return;
+  updateProgress();
+  const onScroll = ()=>updateProgress();
+  el.addEventListener("scroll", onScroll, { passive:true });
+  window.addEventListener("resize", updateProgress);
+  return ()=>{ el.removeEventListener("scroll", onScroll); window.removeEventListener("resize", updateProgress); };
+}, [rankedSimilars, updateProgress]);
+
+const pageScroll = (dir:1|-1)=>{
+  const el = simRowRef.current; if (!el) return;
+  el.scrollBy({ left: dir * Math.round(el.clientWidth*0.9), behavior:"smooth" });
+};
+
+
 
 React.useEffect(() => {
   if (!open) return;
@@ -363,15 +648,12 @@ return createPortal(
                <Play className="h-4 w-4" /> JustWatch
             </a>
 <div className="mt-4">
-  <CompareRatingsCard
-    ourAvg={avg ?? null}
-    imdbAvg={
-      typeof v?.movie?.imdb_rating === "number"
-        ? v.movie.imdb_rating
-        : (typeof imdbHist?.average === "number" ? imdbHist.average : null) // se hai il fetch IMDb
-    }
-    votes={entries.length}
-  />
+<CompareRatingsCard
+  ourAvg={avg ?? null}
+  imdbAvg={typeof v?.movie?.imdb_rating === "number" ? v.movie.imdb_rating : null}
+  votes={entries.length}
+/>
+
 </div>
 <div className="mt-4">
   <QuotesAndTriviaSidebar
@@ -447,9 +729,24 @@ return createPortal(
             </div>
           )}
 
+          {/* Top cast */}
+          {!!cast.length && (
+            <div className="mb-6">
+              <div className="mb-3 text-sm font-semibold text-zinc-200">Top cast</div>
+              <div className="grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
+                {cast.map((p:any) => <CastCard key={`${p?.id}-${p?.name}`} p={p} />)}
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* RIGHT: Facts sidebar */}
+<aside className="space-y-3">
+  
           {/* IMDb-like quick credits */}
           {(directors.length || writers.length || (Array.isArray(details?.credits?.cast) && details.credits.cast.length)) && (
-            <div className="mb-6 rounded-2xl border border-zinc-800/70 bg-zinc-900/30 px-4 py-3 lg:p-5">
+            <div className="mb-2 rounded-2xl border border-zinc-800/70 bg-zinc-900/30 px-4 py-3 lg:p-5">
               <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-200">
                 <Clapperboard className="h-4 w-4" /> Crew
               </div>
@@ -483,21 +780,6 @@ return createPortal(
               </div>
             </div>
           )}
-
-          {/* Top cast */}
-          {!!cast.length && (
-            <div className="mb-6">
-              <div className="mb-3 text-sm font-semibold text-zinc-200">Top cast</div>
-              <div className="grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
-                {cast.map((p:any) => <CastCard key={`${p?.id}-${p?.name}`} p={p} />)}
-              </div>
-            </div>
-          )}
-
-        </div>
-
-        {/* RIGHT: Facts sidebar */}
-<aside className="space-y-3">
   <div className="rounded-2xl border border-zinc-800 p-4">
     <div className="mb-2 text-sm font-semibold text-zinc-200">Facts</div>
     <dl className="space-y-1 text-sm">
@@ -634,6 +916,59 @@ return createPortal(
 </aside>
 
       </div>
+
+      {rankedSimilars.length > 0 && (
+  <div className="mt-4 px-4 md:px-6">
+    <div className="relative rounded-2xl border border-zinc-800 bg-zinc-900/30 px-4 py-4 md:px-6">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-sm font-semibold text-zinc-200">
+          Similar movies <span className="ml-1 text-xs text-zinc-400">({rankedSimilars.length})</span>
+        </div>
+        <div className="hidden md:block w-32 h-1 rounded-full bg-zinc-800 overflow-hidden">
+          <div className="h-full bg-zinc-200" style={{ width: `${Math.round(scrollProgress*100)}%` }} />
+        </div>
+      </div>
+
+      <div
+        ref={simRowRef}
+        className="no-scrollbar overflow-x-auto pb-2 outline-none select-none"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={onPointerUp}
+        onClickCapture={(e) => {
+          // se hai trascinato, sopprimi il click
+          if (drag.current.moved) {
+            e.preventDefault();
+            e.stopPropagation();
+            drag.current.moved = false;
+          }
+        }}
+        tabIndex={0}
+        onKeyDown={(e)=>{
+          if (e.key==="ArrowLeft")  { e.preventDefault(); pageScroll(-1); }
+          if (e.key==="ArrowRight") { e.preventDefault(); pageScroll(1); }
+        }}
+      >
+        <div className="flex snap-x snap-mandatory gap-3 md:gap-4">
+          {rankedSimilars.map((m:any)=>(
+            <div key={m.id} className="w-[150px] sm:w-[170px] md:w-[190px] lg:w-[200px] flex-none snap-start">
+              <SimilarTile
+                movie={m}
+                href={similarHrefMap[m.id] || `https://www.themoviedb.org/movie/${m.id}`}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* gradient edge masks */}
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-zinc-950/95 via-zinc-950/60 to-transparent rounded-l-2xl" />
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-zinc-950/95 via-zinc-950/60 to-transparent rounded-r-2xl" />
+    </div>
+  </div>
+)}
+
     </div>
   </div>,
   document.body
