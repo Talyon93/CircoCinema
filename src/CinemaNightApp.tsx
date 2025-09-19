@@ -474,21 +474,29 @@ export default function CinemaNightApp() {
 
                 {/* Resolver modal: sempre montato nel tab History */}
                 <ViewingModal
-                  v={openViewing}
-                  onClose={() => setOpenViewing(null)}
-                  onEdit={(id) => {
-                    setEditingViewing({ id, title: history.find((x) => x.id === id)?.movie?.title || "" });
-                    setOpenViewing(null);
-                  }}
-                  onResolve={(id, nextMovie) => {
-                    const list = history.map((v) => (v.id === id ? { ...v, movie: nextMovie } : v));
-                    setHistory(list);
-                    persistHistoryLive(list);
-                    setOpenViewing(null);
-                  }}
-                  currentUser={user}
-                />
-
+  v={openViewing}
+  onClose={() => setOpenViewing(null)}
+  onEdit={(id) => {
+    setEditingViewing({ id, title: history.find((x) => x.id === id)?.movie?.title || "" });
+    setOpenViewing(null);
+  }}
+  onResolve={(id, nextMovie) => {
+    const list = history.map((v) => (v.id === id ? { ...v, movie: nextMovie } : v));
+    setHistory(list);
+    persistHistoryLive(list);
+    setOpenViewing(null);
+  }}
+  currentUser={user}
+  // 👇 rank & total presi dal ranking globale
+  rank={
+    openViewing
+      ? (ranking.map instanceof Map
+          ? ranking.map.get(openViewing.id)
+          : (ranking.map as Record<string, number>)[openViewing.id])
+      : undefined
+  }
+  total={ranking.total}
+/>
                 {/* Vote modal */}
                 <VoteModal
                   open={!!voteTarget}
