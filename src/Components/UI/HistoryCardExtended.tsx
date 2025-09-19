@@ -19,6 +19,7 @@ import { SiImdb } from "react-icons/si";
 import ScoreSlider from "./ScoreSlider";
 import { Sparkles, Check, X } from "lucide-react";
 import { PickerBadgePro } from "./PickerPro";
+import { AdvancedMovieDialog } from "./AdvancedMovieDIalog";
 
 // ==== Country helpers (estrazione + fallback + normalizzazione bandiere) ====
 // Ritorna un ISO2 (es. "US") usando priorità: TMDB -> OMDb -> companies -> lingua
@@ -285,6 +286,7 @@ React.useEffect(() => {
 
 
 const [countries, setCountries] = React.useState<string[]>(() => extractCountries(v));
+const [detailsOpen, setDetailsOpen] = React.useState(false);
 
 React.useEffect(() => {
   setCountries(extractCountries(v));
@@ -410,6 +412,13 @@ return (
 
       {onEdit && (
         <div className="flex items-center gap-2">
+          <button
+      onClick={() => setDetailsOpen(true)}
+      className="rounded-lg border border-zinc-700/70 bg-zinc-900/50 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800/70"
+      title="Movie details"
+    >
+      Details
+    </button>
           <button
             onClick={onEdit}
             className="rounded-lg border border-zinc-700/70 bg-zinc-900/50 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800/70"
@@ -672,7 +681,13 @@ return (
         )}
       </div>
     </div>
+    <AdvancedMovieDialog
+    open={detailsOpen}
+    onClose={() => setDetailsOpen(false)}
+    viewing={v}
+  />
   </div>
+  
 );
 
 }

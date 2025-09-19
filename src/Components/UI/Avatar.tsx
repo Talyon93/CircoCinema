@@ -10,21 +10,36 @@ type BaseProps = {
 };
 
 function initialsFrom(name: string) {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((s) => s[0]?.toUpperCase())
-    .join("") || "?";
+  return (
+    name
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((s) => s[0]?.toUpperCase())
+      .join("") || "?"
+  );
 }
 
-export function Avatar({ name, size = 32, className = "", ringClassName = "", alt }: BaseProps) {
+export function Avatar({
+  name,
+  size = 32,
+  className = "",
+  ringClassName = "",
+  alt,
+}: BaseProps) {
   const [src, setSrc] = React.useState<string | null>(null);
+  const retriedRef = React.useRef(false);
 
   React.useEffect(() => {
     let alive = true;
-    fetchAvatarUrl(name).then((u) => alive && setSrc(u));
-    return () => { alive = false; };
+    retriedRef.current = false;
+    setSrc(null); // reset tra cambi di name
+    fetchAvatarUrl(name).then((u) => {
+      if (alive) setSrc(u ?? null);
+    });
+    return () => {
+      alive = false;
+    };
   }, [name]);
 
   const style = { width: size, height: size };
@@ -35,8 +50,22 @@ export function Avatar({ name, size = 32, className = "", ringClassName = "", al
         src={src}
         alt={alt || name}
         className={`rounded-full object-cover ${ringClassName} ${className}`}
-        style={{ width: size, height: size }}
-        onError={() => setSrc(null)} // se l'URL scade/404, fallback
+        style={style}
+        width={size}
+        height={size}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        onError={async () => {
+          // Prova un refresh del signed URL una sola volta
+          if (retriedRef.current) {
+            setSrc(null);
+            return;
+          }
+          retriedRef.current = true;
+          const refreshed = await fetchAvatarUrl(name, { forceRefresh: true });
+          setSrc(refreshed ?? null);
+        }}
       />
     );
   }
@@ -56,14 +85,34 @@ export function Avatar({ name, size = 32, className = "", ringClassName = "", al
   );
 }
 
-export function AvatarInline(props: BaseProps) { return <Avatar {...props} />; }
+export function AvatarInline(props: BaseProps) {
+  return <Avatar {...props} />;
+}
 
 export function ChipAvatar({
-  name, score, size = 20, className = "",
-}: { name: string; score: number; size?: number; className?: string }) {
+  name,
+  score,
+  size = 20,
+  className = "",
+}: {
+  name: string;
+  score: number;
+  size?: number;
+  className?: string;
+}) {
   const ring =
-    score >= 8 ? "ring-emerald-500/60" :
-    score >= 6 ? "ring-amber-400/60"  :
-                 "ring-rose-500/60";
-  return <Avatar name={name} size={size} ringClassName={`ring-2 ${ring}`} className={className} alt={name} />;
+    score >= 8
+      ? "ring-emerald-500/60"
+      : score >= 6
+      ? "ring-amber-400/60"
+      : "ring-rose-500/60";
+  return (
+    <Avatar
+      name={name}
+      size={size}
+      ringClassName={`ring-2 ${ring}`}
+      className={className}
+      alt={name}
+    />
+  );
 }

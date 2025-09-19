@@ -11,6 +11,148 @@ const DEFAULT_LANG = "en-US";
 const DEFAULT_REGION: string | undefined = undefined; // es. "IT" se vuoi bias nazionali
 const MAX_TOP_CAST = 5; // quanti attori principali estrarre
 
+/* =========================
+   Quotes & Trivia (EN) — online with proxy + fallbacks
+========================= */
+
+// 🔌 Se hai un backend/proxy che estrae da IMDb/Wikiquote, mettilo qui.
+// Attesi endpoint:
+//   GET {IMDB_PROXY_BASE}/imdb/:imdbId/quotes?lang=en -> { quotes: Array<{ text: string; by?: string }> }
+//   GET {IMDB_PROXY_BASE}/imdb/:imdbId/trivia?lang=en -> { trivia: Array<{ fact: string; source?: string }> }
+const IMDB_PROXY_BASE: string | undefined = undefined;
+
+type QuoteItem = { text: string; by?: string; source?: string; sourceUrl?: string };
+
+type TriviaItem = { fact: string; source?: string; sourceUrl?: string };
+
+
+const quotesCache = new Map<string, QuoteItem[]>();
+const triviaCache = new Map<string, TriviaItem[]>();
+
+async function fetchFromProxy<T = any>(url: string): Promise<T | null> {
+  try {
+    const res = await safeFetch(url, {}, { timeoutMs: 9000, retries: 1, backoffMs: 500 });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** Prende 1–3 citazioni “di emergenza” dalla tagline TMDB (se c’è) */
+function fallbackQuotesFromTmdb(det?: any): QuoteItem[] {
+  const out: QuoteItem[] = [];
+  const tagline: string | undefined = typeof det?.tagline === "string" && det.tagline.trim()
+    ? det.tagline.trim()
+    : undefined;
+  if (tagline) out.push({ text: tagline, source: "TMDB (tagline)" });
+  return out;
+}
+
+/** Piccole “trivia” di emergenza da OMDb (Awards/BoxOffice) */
+function fallbackTriviaFromOmdb(omdbBlock?: any): TriviaItem[] {
+  const out: TriviaItem[] = [];
+  const Awards = typeof omdbBlock?.Awards === "string" && omdbBlock.Awards.trim() ? omdbBlock.Awards.trim() : undefined;
+  const BoxOffice = typeof omdbBlock?.BoxOffice === "string" && omdbBlock.BoxOffice.trim() ? omdbBlock.BoxOffice.trim() : undefined;
+  if (Awards) out.push({ fact: `Awards: ${Awards}`, source: "OMDb" });
+  if (BoxOffice) out.push({ fact: `Box office: ${BoxOffice}`, source: "OMDb" });
+  return out;
+}
+
+/** Carica quotes EN online (proxy se presente) + fallback pulito */
+export async function fetchQuotesEn(movie: any): Promise<QuoteItem[]> {
+  // imdb_id: prova da movie, poi da dettagli TMDB
+  let imdbId: string | null = movie?.imdb_id ?? null;
+  let det: any = null;
+
+  if (!imdbId && movie?.id) {
+    det = await tmdbDetails(movie.id);
+    imdbId = det?.external_ids?.imdb_id ?? null;
+  } else if (!det && movie?.id) {
+    det = tmdbDetailsCache.get(movie.id);
+  }
+
+  const cacheKey = (imdbId || movie?.id || movie?.title || "unknown") + "|quotes|en";
+  if (quotesCache.has(cacheKey)) return quotesCache.get(cacheKey)!;
+
+  // 1) Proxy backend (consigliato)
+  if (imdbId && IMDB_PROXY_BASE) {
+    const data = await fetchFromProxy<{ quotes?: Array<{ text: string; by?: string; character?: string; source?: string; url?: string; sourceUrl?: string }> }>(
+      `${IMDB_PROXY_BASE.replace(/\/+$/,"")}/imdb/${encodeURIComponent(imdbId)}/quotes?lang=en`
+    );
+    if (data?.quotes?.length) {
+  const normalized = data.quotes.map(q => ({
+    text: q.text,
+    by: q.by || q.character,
+    source: q.source || "IMDb",
+    sourceUrl: q.sourceUrl || q.url,
+  }));
+  quotesCache.set(cacheKey, normalized);
+  return normalized;
+}
+  }
+
+  // 2) Fallback: tagline TMDB
+  if (!det && movie?.id) det = await tmdbDetails(movie.id);
+  const fb = fallbackQuotesFromTmdb(det);
+  quotesCache.set(cacheKey, fb);
+  return fb;
+}
+
+/** Carica trivia EN online (proxy se presente) + fallback OMDb */
+export async function fetchTriviaEn(movie: any): Promise<TriviaItem[]> {
+  let imdbId: string | null = movie?.imdb_id ?? null;
+  let det: any = null;
+
+  if (!imdbId && movie?.id) {
+    det = await tmdbDetails(movie.id);
+    imdbId = det?.external_ids?.imdb_id ?? null;
+  } else if (!det && movie?.id) {
+    det = tmdbDetailsCache.get(movie.id);
+  }
+
+  const cacheKey = (imdbId || movie?.id || movie?.title || "unknown") + "|trivia|en";
+  if (triviaCache.has(cacheKey)) return triviaCache.get(cacheKey)!;
+
+  // 1) Proxy backend (consigliato)
+  if (imdbId && IMDB_PROXY_BASE) {
+    const data = await fetchFromProxy<{ trivia?: Array<{ fact: string; source?: string; url?: string; sourceUrl?: string }> }>(
+            `${IMDB_PROXY_BASE.replace(/\/+$/,"")}/imdb/${encodeURIComponent(imdbId)}/trivia?lang=en`
+    );
+if (data?.trivia?.length) {
+  const normalized = data.trivia.map(t => ({
+    fact: t.fact,
+    source: t.source || "IMDb",
+    sourceUrl: t.sourceUrl || t.url,
+  }));
+  triviaCache.set(cacheKey, normalized);
+  return normalized;
+}
+  }
+
+  // 2) Fallback: OMDb Awards/BoxOffice
+  let omdbBlock: any = movie?.omdb;
+  if (!omdbBlock && imdbId) {
+    const omdb = await omdbRatingFromImdbId(imdbId);
+    omdbBlock = omdb?.omdb;
+  }
+  const fb = fallbackTriviaFromOmdb(omdbBlock);
+  triviaCache.set(cacheKey, fb);
+  return fb;
+}
+
+/** Helper unico: arricchisce il movie con quotes_en & trivia_en */
+export async function ensureQuotesAndTriviaEn(movie: any): Promise<any> {
+  try {
+    let out = movie?.id ? await ensureGenres(movie) : { ...(await ensureGenres(movie)) };
+    const [quotes, trivia] = await Promise.all([fetchQuotesEn(out), fetchTriviaEn(out)]);
+    return { ...out, quotes_en: quotes, trivia_en: trivia };
+  } catch {
+    return movie;
+  }
+}
+
+
 // ——— Fetch con timeout + retry/backoff
 async function safeFetch(
   url: string,
@@ -79,17 +221,45 @@ export async function tmdbSearch(query: string) {
   }
 }
 
+const personIdsCache = new Map<number, string | null>();
+
+export async function tmdbPersonImdbId(personId: number): Promise<string | null> {
+  if (personIdsCache.has(personId)) return personIdsCache.get(personId)!;
+
+  try {
+    const url =
+      `https://api.themoviedb.org/3/person/${personId}/external_ids` +
+      `?api_key=${TMDB_API_KEY}` +
+      `&language=en-US`;
+
+    const res = await safeFetch(url);
+    if (!res.ok) {
+      personIdsCache.set(personId, null);
+      return null;
+    }
+
+    const json = await res.json();
+    const imdb = json?.imdb_id || null;
+    personIdsCache.set(personId, imdb);
+    return imdb;
+  } catch {
+    personIdsCache.set(personId, null);
+    return null;
+  }
+}
+
 export async function tmdbDetails(tmdbId: number) {
   if (!tmdbId && tmdbId !== 0) return null;
   if (tmdbDetailsCache.has(tmdbId)) return tmdbDetailsCache.get(tmdbId)!;
 
   try {
-    const url =
-      `https://api.themoviedb.org/3/movie/${tmdbId}` +
-      `?api_key=${TMDB_API_KEY}` +
-      `&language=${encodeURIComponent(DEFAULT_LANG)}` +
-      // ⟵ aggiungiamo credits per avere registi e cast
-      `&append_to_response=external_ids,credits`;
+  const url =
+    `https://api.themoviedb.org/3/movie/${tmdbId}` +
+    `?api_key=${TMDB_API_KEY}` +
+    `&language=${encodeURIComponent(DEFAULT_LANG)}` +
+    `&append_to_response=credits,keywords,images,videos,reviews,external_ids` +
+    `&include_image_language=${encodeURIComponent(DEFAULT_LANG)},en,null` +
+    `&include_video_language=${encodeURIComponent(DEFAULT_LANG)},en`;
 
     const res = await safeFetch(url);
     if (!res.ok) return null;
@@ -149,6 +319,8 @@ export async function omdbRatingFromImdbId(imdbId: string) {
         Country: typeof res.Country === "string" ? res.Country : undefined, // usato per pickPrimaryCountryISO2
         Director: typeof res.Director === "string" ? res.Director : undefined, // fallback nomi registi (stringa separata da virgole)
         Actors: typeof res.Actors === "string" ? res.Actors : undefined,     // fallback nomi attori (stringa separata da virgole)
+        Awards: typeof res.Awards === "string" ? res.Awards : undefined,
+       BoxOffice: typeof res.BoxOffice === "string" ? res.BoxOffice : undefined,
       },
     };
     omdbCache.set(id, out);

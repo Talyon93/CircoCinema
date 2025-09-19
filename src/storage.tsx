@@ -56,8 +56,28 @@ export async function ensureLiveFileExists(): Promise<void> {
 
 /** Carica lo storico live; se fallisce ritorna []. */
 export async function loadHistoryLive(): Promise<any[]> {
-  const list = await downloadJsonSafe<any[]>(STORAGE_BUCKET, STORAGE_LIVE_HISTORY_KEY);
-  return Array.isArray(list) ? list : [];
+  try {
+    // genera un signedUrl temporaneo, così l’URL cambia sempre
+    const { data: signed } = await sb.storage
+      .from(STORAGE_BUCKET)
+      .createSignedUrl(STORAGE_LIVE_HISTORY_KEY, 60); // valido 60s
+
+    const state = await loadSharedState();
+    const rev = Number((state as any)?.history_live_rev || 0);
+
+    const url = signed?.signedUrl
+      ? `${signed.signedUrl}&rev=${rev}`
+      : // fallback se bucket è pubblico
+        sb.storage.from(STORAGE_BUCKET).getPublicUrl(STORAGE_LIVE_HISTORY_KEY).data.publicUrl +
+        `?rev=${rev}`;
+
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return Array.isArray(json) ? json : [];
+  } catch {
+    return [];
+  }
 }
 
 /**

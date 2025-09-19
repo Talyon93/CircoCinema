@@ -148,7 +148,7 @@ export function EditViewingDialog({
   currentUser: string;
   onClose: () => void;
   onSave: (next: any) => void;
-  onDelete: () => void;
+  onDelete: (view?: any) => void;
 }) {
   const [movie, setMovie] = useState(viewing?.movie || null);
   const [ratings, setRatings] = useState<Record<string, number>>(viewing?.ratings || {});
@@ -201,9 +201,20 @@ export function EditViewingDialog({
   };
 
   const confirmDelete = () => {
-    const title = movie?.title || "this viewing";
-    if (confirm(`Delete "${title}"? This action cannot be undone.`)) onDelete();
-  };
+  const title =
+    movie?.title ||
+    viewing?.movie?.title ||
+    "this viewing";
+  if (window.confirm(`Delete "${title}"? This action cannot be undone.`)) {
+    // Passa al parent: prima l'id se c'è, altrimenti l'intero oggetto
+    const payload = viewing?.id ?? viewing ?? null;
+    try {
+      onDelete(payload as any);
+    } finally {
+      onClose(); // chiudi sempre il dialog per evitare UI stantie
+    }
+  }
+};
 
   if (!open) return null;
 
@@ -279,6 +290,7 @@ export function EditViewingDialog({
             </div>
             <div className="flex items-center gap-2">
               <button
+              type="button" 
                 onClick={confirmDelete}
                 className="rounded-xl border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-sm font-medium text-red-300 hover:bg-red-900/30"
               >
